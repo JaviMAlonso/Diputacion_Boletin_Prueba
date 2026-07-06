@@ -13,10 +13,10 @@ La carpeta debería verse tal que así:
 ### ├── monitor_convocatorias.py
 ### ├── requirements.txt
 ### ├── templates/
-### │   └── index.html
+### │······└── index.html
 ### └── static/
-###     ├── style.css
-###     └── script.js
+### ········├── style.css
+### ········└── script.js
 
 ```bash
 cd monitor_web
