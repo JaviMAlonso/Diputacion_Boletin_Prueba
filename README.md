@@ -7,6 +7,18 @@ formulario web encima.
 
 ## Puesta en marcha
 
+La carpeta debería verse tal que así:
+monitor_web/
+├── app.py
+├── monitor_convocatorias.py
+├── requirements.txt
+├── templates/
+│   └── index.html
+└── static/
+    ├── favicon.png
+    ├── style.css
+    └── script.js
+
 ```bash
 cd monitor_web
 pip install -r requirements.txt
