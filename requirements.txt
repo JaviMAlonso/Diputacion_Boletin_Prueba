@@ -1,0 +1,6 @@
+flask
+requests
+beautifulsoup4
+# Opcionales, solo necesarios si activas "Generar resumen con IA":
+google-genai
+pymupdf
