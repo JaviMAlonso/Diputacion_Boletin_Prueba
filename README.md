@@ -13,11 +13,11 @@ monitor_web/
 ### ├── monitor_convocatorias.py
 ### ├── requirements.txt
 ### ├── templates/
-### │   └── index.html
+### │$$$└── index.html
 ### └── static/
-###     ├── favicon.png
-###     ├── style.css
-###     └── script.js
+### $$$$├── favicon.png
+### $$$$├── style.css
+### $$$$└── script.js
 
 ```bash
 cd monitor_web
