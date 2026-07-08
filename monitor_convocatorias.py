@@ -55,6 +55,7 @@ import os
 import re
 import sys
 import tempfile
+import unicodedata
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -64,9 +65,10 @@ from xml.etree import ElementTree as ET
 import requests
 
 try:
-    from bs4 import BeautifulSoup  # usado por los scrapers de DOCM/BOP
+    from bs4 import BeautifulSoup, NavigableString  # usado por los scrapers de DOCM/BOP
 except ImportError:
     BeautifulSoup = None  # se avisa en tiempo de ejecución si falta
+    NavigableString = str
 
 try:
     # SDK oficial y actualmente soportado (el paquete antiguo
@@ -87,7 +89,7 @@ except ImportError:
 # 1. CONFIGURACIÓN
 # =====================================================================
 
-HEADERS = {"User-Agent": "MonitorConvocatoriasPublicas/1.0 (uso institutional)"}
+HEADERS = {"User-Agent": "MonitorConvocatoriasPublicas/1.0 (uso institucional)"}
 ESTADO_PATH = Path("convocatorias_vistas.json")
 
 # Palabras clave para clasificar cada anuncio detectado
@@ -116,6 +118,8 @@ CATEGORIAS_KEYWORDS = {
 }
 
 # Palabras que indican irrelevancia (para reducir ruido, ajustable).
+# NOTA: ya no excluimos términos de empleo público/oposiciones aquí, porque
+# ahora tienen su propia categoría arriba ("Empleo público / Oposición").
 EXCLUIR_KEYWORDS: list[str] = []
 
 MESES = {
@@ -167,7 +171,7 @@ class Convocatoria:
 
 
 # =====================================================================
-# 3. UTILIDADES DE EXTRACCIÓN (Optimizado con reglas mejoradas)
+# 3. UTILIDADES DE EXTRACCIÓN (IA ligera basada en reglas / regex)
 # =====================================================================
 
 def clasificar_texto(texto: str) -> Optional[str]:
@@ -185,66 +189,293 @@ def extraer_plazo(texto: str) -> tuple[Optional[str], Optional[int]]:
     """
     Busca menciones de plazo en el texto ('hasta el DD de MES de AAAA',
     'DD/MM/AAAA', 'plazo de X días') y devuelve (texto_plazo, dias_restantes).
-    """
-    texto_low = texto.lower()
-    hoy = date.today()
 
-    # 1. Patrón amplio "hasta el dd de <mes> [de aaaa]"
-    meses_patron = "|".join(MESES.keys())
+    OJO: muchos anuncios (sobre todo convocatorias de oposiciones) empiezan
+    con "Resolución de DD de MES de AAAA, de..." — esa fecha es cuándo se
+    firmó la resolución, NO un plazo límite. Antes este regex la cogía sin
+    más y la confundía con la fecha de fin de plazo. Ahora:
+      1º Buscamos una fecha con un indicador explícito de plazo delante
+         ("hasta el...", "antes del...", "fecha límite...").
+      2º Si no lo hay, buscamos cualquier fecha "dd de mes de aaaa" pero
+         descartando las que vienen justo después de "resolución de",
+         "orden de", "acuerdo de", "de fecha", etc. (fechas de emisión del
+         propio documento, no plazos).
+    OJO 2: el texto de un documento real (sobre todo extraído de un PDF)
+    viene con saltos de línea en mitad de las frases. Si no se normaliza,
+    patrones como "plazo\b.{0,60}?\bde" nunca cruzan esos saltos de línea
+    y se pierden coincidencias que en el documento están perfectamente
+    seguidas. Por eso lo primero que hacemos es colapsar cualquier
+    secuencia de espacios en blanco (incluidos saltos de línea) a un único
+    espacio.
+    """
+    texto = re.sub(r"\s+", " ", texto)
+    texto_low = texto.lower()
+    patron_fecha = r"(\d{1,2})\s+de\s+(" + "|".join(MESES.keys()) + r")\s+de\s+(\d{4})"
+
+    lead_plazo = (
+        r"(?:hasta(?:\s+el)?|antes\s+del|no\s+m[aá]s\s+tarde\s+del|"
+        r"fecha\s+l[ií]mite\s*:?|finaliza(?:r[aá])?\s+el|vence\s+el|concluye\s+el)"
+    )
+    lead_emision = (
+        r"(?:resoluci[oó]n\s+n?[ºo]?\s*\d*\s*,?\s*de|orden\s+de|acuerdo\s+de|"
+        r"instrucci[oó]n\s+de|circular\s+de|decreto\s+de|de\s+fecha)"
+    )
+    lead_apertura = r"apertura\s+(?:de\s+ofertas|sobre\s+administrativa|sobre\s+oferta\s+\w+|de\s+las?\s+plicas)"
+
+    # 1) Fecha precedida de un indicador explícito de plazo ("hasta el...").
+    m = re.search(lead_plazo + r"\s+" + patron_fecha, texto_low)
+    if m:
+        dia, mes_nombre, anio = m.groups()
+        try:
+            fecha_limite = date(int(anio), MESES[mes_nombre], int(dia))
+            dias = (fecha_limite - date.today()).days
+            return f"Hasta el {dia} de {mes_nombre} de {anio}", dias
+        except ValueError:
+            pass
+
+    # 2) Licitaciones: la fecha de "apertura de ofertas" / "apertura sobre
+    #    administrativa" no es literalmente el plazo de presentación (suele
+    #    ser un poco posterior), pero cuando no hay un plazo explícito es el
+    #    dato más útil y cercano que aparece en el anuncio. La etiquetamos
+    #    aparte para no dar a entender que es una fecha límite real, y la
+    #    comprobamos ANTES del patrón genérico de abajo para que no se
+    #    cuele ahí mal etiquetada como "Hasta el...".
+    m = re.search(lead_apertura + r"[^0-9]{0,40}" + patron_fecha, texto_low)
+    if m:
+        dia, mes_nombre, anio = m.groups()
+        try:
+            fecha_apertura = date(int(anio), MESES[mes_nombre], int(dia))
+            dias = (fecha_apertura - date.today()).days
+            return f"Apertura de ofertas: {dia} de {mes_nombre} de {anio}", dias
+        except ValueError:
+            pass
+
+    # 3) "Plazo de ejecución": el periodo comprendido entre dos fechas
+    #    (típico de las bases de subvenciones: "el periodo comprendido
+    #    entre el 1 de diciembre de 2025 y el 31 de diciembre de 2026").
+    #    No es un plazo de presentación, sino el plazo para ejecutar la
+    #    actividad subvencionada una vez concedida; lo etiquetamos aparte
+    #    y usamos la fecha de FIN del periodo (la relevante para saber
+    #    hasta cuándo hay margen).
     m = re.search(
-        r"(?:hasta\s+el\s+|vence\s+el\s+|término\s+el\s+)?(\d{1,2})\s+de\s+(" + meses_patron + r")(?:\s+de\s+(\d{4}))?",
+        r"comprendido\s+entre\s+el\s+" + patron_fecha + r"\s+y\s+el\s+" + patron_fecha,
         texto_low,
     )
     if m:
-        dia, mes_nombre, anio_opt = m.groups()
-        anio = int(anio_opt) if anio_opt else hoy.year
+        dia_fin, mes_fin, anio_fin = m.group(4), m.group(5), m.group(6)
         try:
-            fecha_limite = date(anio, MESES[mes_nombre], int(dia))
-            # Si el boletín omitió el año y la fecha resultante ya pasó, pertenece al año siguiente
-            if not anio_opt and fecha_limite < hoy:
-                fecha_limite = date(anio + 1, MESES[mes_nombre], int(dia))
-            dias = (fecha_limite - hoy).days
-            return f"Hasta el {dia} de {mes_nombre} de {fecha_limite.year}", dias
+            fecha_fin = date(int(anio_fin), MESES[mes_fin], int(dia_fin))
+            dias = (fecha_fin - date.today()).days
+            return f"Plazo de ejecución: hasta el {dia_fin} de {mes_fin} de {anio_fin}", dias
         except ValueError:
             pass
 
-    # 2. Patrón estándar dd/mm/aaaa o dd-mm-aaaa
-    m = re.search(r"(\d{1,2})[/-](\d{1,2})[/-](\d{4})", texto)
-    if m:
+    # 4) Cualquier fecha "dd de mes de aaaa", descartando las que sean en
+    #    realidad la fecha de emisión del documento (resolución/orden/etc.),
+    #    una fecha de apertura de ofertas (punto 2) o el principio/fin de
+    #    un periodo de ejecución (punto 3, ya cubierto arriba).
+    lead_rango = r"(?:comprendido\s+)?entre\s+el"
+    for m in re.finditer(patron_fecha, texto_low):
+        contexto_previo = texto_low[max(0, m.start() - 45):m.start()]
+        if (re.search(lead_emision + r"\s*$", contexto_previo)
+                or re.search(lead_apertura + r"[^0-9]{0,40}$", contexto_previo)
+                or re.search(lead_rango + r"\s*$", contexto_previo)):
+            continue
+        dia, mes_nombre, anio = m.groups()
+        try:
+            fecha_limite = date(int(anio), MESES[mes_nombre], int(dia))
+            dias = (fecha_limite - date.today()).days
+            return f"Hasta el {dia} de {mes_nombre} de {anio}", dias
+        except ValueError:
+            continue
+
+    # Patrón dd/mm/aaaa (aplicamos la misma exclusión de fecha de emisión)
+    for m in re.finditer(r"(\d{1,2})/(\d{1,2})/(\d{4})", texto):
+        contexto_previo = texto_low[max(0, m.start() - 30):m.start()]
+        if re.search(lead_emision + r"\s*$", contexto_previo):
+            continue
         dia, mes, anio = map(int, m.groups())
         try:
             fecha_limite = date(anio, mes, dia)
-            dias = (fecha_limite - hoy).days
+            dias = (fecha_limite - date.today()).days
             return f"Hasta el {dia:02d}/{mes:02d}/{anio}", dias
         except ValueError:
-            pass
+            continue
 
-    # 3. Patrón genérico "plazo de X días"
-    m = re.search(r"plazo\s+de\s+(\d{1,3})\s+d[ií]as", texto_low)
+    # Patrón "plazo de X días (hábiles/naturales)", con dígitos o en letra.
+    # Para la versión en letra usamos el mismo conversor que extraer_importe
+    # (más abajo en el archivo), así detectamos cualquier número escrito
+    # ("veinte días hábiles", "cuarenta y cinco días naturales",
+    # "un mes y quince días"...) y no solo una lista fija de casos comunes.
+    m = re.search(r"plazo\b.{0,60}?\bde\s+(\d{1,3})\s+d[ií]as", texto_low)
     if m:
         dias = int(m.group(1))
         return f"Plazo de {dias} días desde la publicación", None
 
+    m = re.search(
+        r"plazo\b.{0,60}?\bde\s+((?:" + _PATRON_NUM_PALABRA + r"\s+)+)d[ií]as",
+        texto_low,
+    )
+    if m:
+        dias = _numero_escrito_a_valor(m.group(1))
+        if dias is not None:
+            return f"Plazo de {dias} días desde la publicación", None
+
+    # Orden inverso, también muy habitual: "veinte días hábiles de plazo"
+    # / "20 días naturales de plazo" (en vez de "plazo de veinte días").
+    m = re.search(r"(\d{1,3})\s+d[ií]as\s+(?:h[aá]biles|naturales)?\s*de\s+plazo", texto_low)
+    if m:
+        dias = int(m.group(1))
+        return f"Plazo de {dias} días desde la publicación", None
+
+    m = re.search(
+        r"((?:" + _PATRON_NUM_PALABRA + r"\s+)+)d[ií]as\s+(?:h[aá]biles|naturales)?\s*de\s+plazo",
+        texto_low,
+    )
+    if m:
+        dias = _numero_escrito_a_valor(m.group(1))
+        if dias is not None:
+            return f"Plazo de {dias} días desde la publicación", None
+
     return None, None
 
 
+def _numero_escrito_a_valor(fragmento: str) -> Optional[int]:
+    """Convierte un número escrito en palabras españolas ('veinticinco',
+    'cuarenta y ocho', 'ciento veinte', 'dos mil quinientos'...) a un
+    entero. Devuelve None si no reconoce nada."""
+    UNIDADES = {
+        "cero": 0, "un": 1, "uno": 1, "una": 1, "dos": 2, "tres": 3,
+        "cuatro": 4, "cinco": 5, "seis": 6, "siete": 7, "ocho": 8, "nueve": 9,
+        "diez": 10, "once": 11, "doce": 12, "trece": 13, "catorce": 14,
+        "quince": 15, "dieciseis": 16, "diecisiete": 17, "dieciocho": 18,
+        "diecinueve": 19, "veinte": 20, "veintiun": 21, "veintiuno": 21,
+        "veintiuna": 21, "veintidos": 22, "veintitres": 23, "veinticuatro": 24,
+        "veinticinco": 25, "veintiseis": 26, "veintisiete": 27,
+        "veintiocho": 28, "veintinueve": 29,
+    }
+    DECENAS = {
+        "treinta": 30, "cuarenta": 40, "cincuenta": 50, "sesenta": 60,
+        "setenta": 70, "ochenta": 80, "noventa": 90,
+    }
+    CENTENAS = {
+        "cien": 100, "ciento": 100, "doscientos": 200, "doscientas": 200,
+        "trescientos": 300, "trescientas": 300, "cuatrocientos": 400,
+        "cuatrocientas": 400, "quinientos": 500, "quinientas": 500,
+        "seiscientos": 600, "seiscientas": 600, "setecientos": 700,
+        "setecientas": 700, "ochocientos": 800, "ochocientas": 800,
+        "novecientos": 900, "novecientas": 900,
+    }
+
+    def sin_acentos(s: str) -> str:
+        return "".join(
+            c for c in unicodedata.normalize("NFD", s)
+            if unicodedata.category(c) != "Mn"
+        )
+
+    tokens = sin_acentos(fragmento.lower()).split()
+    total = 0
+    actual = 0
+    encontrado = False
+
+    for tok in tokens:
+        if tok == "y":
+            continue
+        if tok == "mil":
+            actual = actual if actual else 1
+            total += actual * 1000
+            actual = 0
+            encontrado = True
+        elif tok in CENTENAS:
+            actual += CENTENAS[tok]
+            encontrado = True
+        elif tok in DECENAS:
+            actual += DECENAS[tok]
+            encontrado = True
+        elif tok in UNIDADES:
+            actual += UNIDADES[tok]
+            encontrado = True
+        else:
+            return None  # palabra no reconocida: mejor no arriesgar
+
+    total += actual
+    return total if encontrado else None
+
+
+# Vocabulario reconocido por _numero_escrito_a_valor, usado para construir
+# el patrón que localiza estos números dentro de un texto más largo.
+_PALABRAS_NUMERO = sorted(
+    ["cero", "un", "uno", "una", "dos", "tres", "cuatro", "cinco", "seis",
+     "siete", "ocho", "nueve", "diez", "once", "doce", "trece", "catorce",
+     "quince", "dieciséis", "diecisiete", "dieciocho", "diecinueve",
+     "veinte", "veintiún", "veintiuno", "veintiuna", "veintidós",
+     "veintitrés", "veinticuatro", "veinticinco", "veintiséis",
+     "veintisiete", "veintiocho", "veintinueve", "treinta", "cuarenta",
+     "cincuenta", "sesenta", "setenta", "ochenta", "noventa", "cien",
+     "ciento", "doscientos", "doscientas", "trescientos", "trescientas",
+     "cuatrocientos", "cuatrocientas", "quinientos", "quinientas",
+     "seiscientos", "seiscientas", "setecientos", "setecientas",
+     "ochocientos", "ochocientas", "novecientos", "novecientas", "mil", "y"],
+    key=len, reverse=True,
+)
+_PATRON_NUM_PALABRA = r"(?:" + "|".join(_PALABRAS_NUMERO) + r")"
+_RE_EUROS_EN_LETRA = re.compile(
+    r"((?:" + _PATRON_NUM_PALABRA + r"\s+)+)euros?"
+    r"(?:\s+y\s+((?:" + _PATRON_NUM_PALABRA + r"\s+)+)c[eé]ntimos?)?",
+    re.IGNORECASE,
+)
+
+
 def extraer_importe(texto: str) -> Optional[str]:
-    """Busca cuantías económicas en formato numérico o escritas en texto."""
-    texto_low = texto.lower()
+    """Busca cuantías económicas del tipo '1.234,56 euros' o '1.234.567 €'.
+    Si no encuentra ningún importe en euros, busca un porcentaje máximo de
+    financiación (p. ej. 'hasta el 80%', 'máximo del 50 %', '80% del coste'),
+    que en muchas subvenciones sustituye a una cuantía fija.
 
-    # 1. Búsqueda de formato numérico estándar (ej: 125.000,00 €)
-    m_num = re.search(r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)\s*(?:€|euros?)", texto, re.IGNORECASE)
-    if m_num:
-        return f"{m_num.group(1)} €"
+    En licitaciones el importe casi nunca aparece suelto: viene etiquetado
+    como "Valor estimado del contrato", "Presupuesto base de licitación" o
+    "Importe de licitación". Buscamos primero esas etiquetas (dato más
+    fiable y representativo) antes de coger el primer € que aparezca en
+    cualquier otro sitio del texto (que podría ser una fianza, un importe
+    de IVA aparte, etc.).
 
-    # 2. Búsqueda de importes escritos literalmente en letras
-    m_letras = re.search(r"((?:un|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|ciento|doscientos|trescientos|cuatrocientos|quinientos|seiscientos|setecientos|ochocientos|novecientos|mil|mill[oó]n|millones|\s)+)\s*(?:€|euros?)", texto_low)
-    if m_letras:
-        resultado_letras = m_letras.group(1).strip()
-        if len(resultado_letras) > 2:
-            return f"{resultado_letras.capitalize()} €"
+    Algunos boletines (sobre todo bases de tasas y convocatorias de
+    oposiciones) escriben la cantidad completamente en letra en vez de en
+    dígitos, p. ej. "veinticinco euros y cuarenta y ocho céntimos". Si no
+    hay ningún importe en dígitos, también probamos a reconocer esto.
 
-    # 3. Porcentajes máximos de cofinanciación
+    Igual que en extraer_plazo, normalizamos saltos de línea/espacios
+    múltiples a uno solo antes de nada, porque el texto de un PDF real
+    parte las frases en mitad de una etiqueta como "Valor estimado" y su
+    cifra si no se hace esto.
+    """
+    texto = re.sub(r"\s+", " ", texto)
+
+    m_etiquetado = re.search(
+        r"(?:valor\s+estimado(?:\s+del\s+contrato)?|presupuesto\s+base\s+de\s+licitaci[oó]n|"
+        r"importe\s+de\s+licitaci[oó]n|valor\s+de\s+la\s+oferta\s+seleccionada)\s*:?\s*"
+        r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)\s*(?:€|euros)",
+        texto, re.IGNORECASE,
+    )
+    if m_etiquetado:
+        etiqueta = "oferta adjudicada" if "oferta" in m_etiquetado.group(0).lower() else "valor estimado"
+        return f"{m_etiquetado.group(1)} € ({etiqueta})"
+
+    m = re.search(r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)\s*(?:€|euros)", texto, re.IGNORECASE)
+    if m:
+        return f"{m.group(1)} €"
+
+    m_letra = _RE_EUROS_EN_LETRA.search(texto)
+    if m_letra:
+        euros = _numero_escrito_a_valor(m_letra.group(1))
+        centimos = _numero_escrito_a_valor(m_letra.group(2)) if m_letra.group(2) else 0
+        if euros is not None:
+            importe = f"{euros},{centimos:02d} €"
+            contexto_previo = texto[max(0, m_letra.start() - 70):m_letra.start()].lower()
+            if "tasa" in contexto_previo:
+                importe += " (tasa)"
+            return importe
+
     m_pct = re.search(
         r"(?:hasta(?:\s+un|\s+el)?|m[aá]xim[oa](?:\s+de|\s+del)?)\s*(\d{1,3}(?:[.,]\d+)?)\s*%",
         texto, re.IGNORECASE,
@@ -268,10 +499,13 @@ def coincide_area_interes(conv: Convocatoria, areas_interes: list[str]) -> bool:
 
 
 # =====================================================================
-# 4. FUENTE 1: BOE — API oficial de datos abiertos
+# 4. FUENTE 1: BOE — API oficial de datos abiertos (real y funcional)
+#    Documentación: https://www.boe.es/datosabiertos/api/api.php
 # =====================================================================
 
 def _como_lista(valor):
+    """La API del BOE devuelve un dict cuando hay un único elemento y una
+    lista cuando hay varios. Esta función normaliza siempre a lista."""
     if valor is None:
         return []
     if isinstance(valor, list):
@@ -280,6 +514,14 @@ def _como_lista(valor):
 
 
 def fetch_boe(dias_atras: int = 7) -> list[Convocatoria]:
+    """
+    Descarga los sumarios diarios del BOE de los últimos `dias_atras` días
+    usando la API pública oficial (JSON) y extrae los anuncios relevantes
+    (subvenciones, ayudas, licitaciones, cooperación).
+
+    Endpoint oficial: https://boe.es/datosabiertos/api/boe/sumario/{AAAAMMDD}
+    Documentación: https://www.boe.es/datosabiertos/documentos/APIsumarioBOE.pdf
+    """
     resultados: list[Convocatoria] = []
     hoy = date.today()
     headers_json = {**HEADERS, "Accept": "application/json"}
@@ -291,6 +533,7 @@ def fetch_boe(dias_atras: int = 7) -> list[Convocatoria]:
         try:
             resp = requests.get(url, headers=headers_json, timeout=15)
             if resp.status_code != 200:
+                # 404 es normal en domingos/festivos (no hay BOE ese día)
                 continue
             payload = resp.json()
         except (requests.RequestException, ValueError):
@@ -305,6 +548,8 @@ def fetch_boe(dias_atras: int = 7) -> list[Convocatoria]:
                 for depto in _como_lista(seccion.get("departamento")):
                     organismo = depto.get("nombre")
 
+                    # Los <item> pueden colgar directamente del departamento
+                    # o estar agrupados dentro de uno o varios <epigrafe>.
                     items = list(_como_lista(depto.get("item")))
                     for epigrafe in _como_lista(depto.get("epigrafe")):
                         items.extend(_como_lista(epigrafe.get("item")))
@@ -346,13 +591,18 @@ def fetch_boe(dias_atras: int = 7) -> list[Convocatoria]:
 
 # =====================================================================
 # 5. FUENTE 2: DOCM — Diario Oficial de Castilla-La Mancha
+#    NOTA: el DOCM no ofrece una API pública estable. Esta función es
+#    una PLANTILLA de scraping sobre el buscador web (docm.jccm.es).
+#    Debes revisar los selectores CSS/XPath tras inspeccionar la página
+#    actual, ya que el HTML puede cambiar.
 # =====================================================================
 
 def fetch_docm(dias_atras: int = 7) -> list[Convocatoria]:
     resultados: list[Convocatoria] = []
 
     if BeautifulSoup is None:
-        print("[AVISO] BeautifulSoup no instalado: se omite DOCM.", file=sys.stderr)
+        print("[AVISO] BeautifulSoup no instalado: se omite DOCM. "
+              "Instala con: pip install beautifulsoup4", file=sys.stderr)
         return resultados
 
     base_url = "https://docm.jccm.es"
@@ -367,6 +617,8 @@ def fetch_docm(dias_atras: int = 7) -> list[Convocatoria]:
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
+    # --- PLANTILLA: ajustar el selector a la estructura real de resultados ---
+    # Ejemplo orientativo (revisar y adaptar):
     for enlace in soup.select("a[href*='pdf']"):
         titulo = enlace.get_text(strip=True)
         if not titulo:
@@ -396,6 +648,9 @@ def fetch_docm(dias_atras: int = 7) -> list[Convocatoria]:
 
 # =====================================================================
 # 6. FUENTE 3: BOP — Boletín Oficial de la Provincia
+#    NOTA: cada Diputación Provincial gestiona su propio BOP con su
+#    propia web y estructura. Esta es una PLANTILLA genérica: indica la
+#    URL del buscador de tu provincia y ajusta los selectores.
 # =====================================================================
 
 def fetch_bop(provincia: str = "Toledo", dias_atras: int = 7) -> list[Convocatoria]:
@@ -405,6 +660,8 @@ def fetch_bop(provincia: str = "Toledo", dias_atras: int = 7) -> list[Convocator
         print("[AVISO] BeautifulSoup no instalado: se omite BOP.", file=sys.stderr)
         return resultados
 
+    # --- PLANTILLA: sustituir por la URL real del BOP de tu provincia ---
+    # Ejemplo (Diputación de Toledo): https://bop.diputoledo.es
     bop_urls = {
         "toledo": "https://bop.diputoledo.es",
         "ciudad real": "https://bop.dipucr.es",
@@ -414,7 +671,8 @@ def fetch_bop(provincia: str = "Toledo", dias_atras: int = 7) -> list[Convocator
     }
     base_url = bop_urls.get(provincia.lower())
     if not base_url:
-        print(f"[AVISO] No hay URL configurada para la provincia '{provincia}'.", file=sys.stderr)
+        print(f"[AVISO] No hay URL configurada para la provincia '{provincia}'. "
+              f"Añádela en bop_urls dentro de fetch_bop().", file=sys.stderr)
         return resultados
 
     try:
@@ -426,6 +684,7 @@ def fetch_bop(provincia: str = "Toledo", dias_atras: int = 7) -> list[Convocator
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
+    # --- PLANTILLA: ajustar el selector real de anuncios del portal ---
     for enlace in soup.select("a"):
         titulo = enlace.get_text(strip=True)
         if not titulo or len(titulo) < 15:
@@ -453,7 +712,35 @@ def fetch_bop(provincia: str = "Toledo", dias_atras: int = 7) -> list[Convocator
     return resultados
 
 
+# =====================================================================
+# 6bis. BOP TOLEDO — Resumen diario "en bruto" (título + enlace al PDF)
+#    Usa el buscador público de resúmenes diarios del BOP de Toledo:
+#    https://bop.diputoledo.es/webEbop/ebopResumen.jsp?publication_date=DD/MM/YYYY&publication_date_to=DD/MM/YYYY
+#
+#    NOTA: no se ha podido inspeccionar el HTML en directo desde este
+#    entorno (el robots.txt del portal bloquea el acceso automatizado a
+#    herramientas de terceros), así que el análisis de abajo es lo más
+#    fiel posible a la estructura observada en resultados de búsqueda
+#    (bloques con "Número de inserción", "Ver anuncio", "Tipo de
+#    anuncio" y "Resumen/Asunto"). Si al ejecutarlo no aparece nada,
+#    abre la URL en el navegador, pulsa clic derecho -> "Ver código
+#    fuente" sobre un anuncio y ajusta el selector indicado más abajo.
+# =====================================================================
+
 def fetch_bop_toledo_resumen_dia(fecha: "date | None" = None) -> list[dict]:
+    """Devuelve una lista de dicts {titulo, resumen, organismo, url_pdf} con
+    los anuncios del BOP de Toledo publicados en la fecha indicada (por
+    defecto, hoy). No aplica ninguna clasificación ni filtro: es el listado
+    en bruto, pensado para el modo "ver solo un día concreto" de la interfaz
+    web.
+
+    Confirmado inspeccionando el HTML real de ebopResumen.jsp: cada anuncio
+    va dentro de un <div class="announce"> (con el enlace "Ver anuncio" y el
+    "Resumen/Asunto"), y cada grupo de anuncios de una misma entidad va
+    precedido de un <h3 class="publisherBlock">Anunciante : NOMBRE</h3>.
+    Recorremos el documento en orden y nos quedamos con el último
+    "publisherBlock" visto para asignárselo a los anuncios siguientes.
+    """
     if BeautifulSoup is None:
         print("[AVISO] BeautifulSoup no instalado: se omite el resumen BOP.", file=sys.stderr)
         return []
@@ -476,43 +763,48 @@ def fetch_bop_toledo_resumen_dia(fecha: "date | None" = None) -> list[dict]:
 
     soup = BeautifulSoup(resp.text, "html.parser")
     resultados: list[dict] = []
-    vistos: set[str] = set()
+    vistos: set[tuple[str, str]] = set()
+    organismo_actual: Optional[str] = None
 
-    for enlace in soup.find_all("a"):
-        texto_enlace = enlace.get_text(strip=True).lower()
-        if "ver anuncio" not in texto_enlace:
+    for el in soup.find_all(["h3", "div"]):
+        clases = el.get("class") or []
+
+        if "publisherBlock" in clases:
+            texto = el.get_text(" ", strip=True)
+            m = re.search(r"anunciante\s*:\s*(.+)", texto, re.IGNORECASE)
+            organismo_actual = (m.group(1) if m else texto).strip()
             continue
 
-        href = enlace.get("href", "").strip()
+        if "announce" not in clases:
+            continue
+
+        enlace = el.find("a", href=True)
+        if enlace is None:
+            continue
+        href = enlace["href"].strip()
         if not href:
             continue
         url_pdf = href if href.startswith("http") else f"https://bop.diputoledo.es{href}"
 
-        contenedor = enlace
-        titulo = ""
-        for _ in range(6):
-            contenedor = contenedor.find_parent()
-            if contenedor is None:
-                break
-            texto_bloque = contenedor.get_text(" ", strip=True)
-            if "resumen/asunto" in texto_bloque.lower():
-                partes = re.split(r"resumen/asunto\s*:?\s*", texto_bloque, flags=re.IGNORECASE)
-                if len(partes) > 1:
-                    titulo = partes[-1].strip()
-                break
-
-        if not titulo:
+        texto_bloque = el.get_text(" ", strip=True)
+        m_resumen = re.search(r"resumen/asunto\s*:?\s*(.+)", texto_bloque, re.IGNORECASE)
+        resumen = m_resumen.group(1).strip() if m_resumen else ""
+        if not resumen:
             continue
 
-        clave = (titulo, url_pdf)
+        clave = (resumen, url_pdf)
         if clave in vistos:
             continue
         vistos.add(clave)
 
-        resultados.append({"titulo": titulo, "url_pdf": url_pdf})
+        resultados.append({
+            "titulo": resumen,
+            "resumen": resumen,
+            "organismo": organismo_actual or "Entidad no identificada",
+            "url_pdf": url_pdf,
+        })
 
     return resultados
-
 
 def cargar_vistas() -> set[str]:
     if ESTADO_PATH.exists():
@@ -553,6 +845,7 @@ def generar_resumen_semanal(convocatorias: list[Convocatoria], municipio: str) -
 
 
 def generar_alertas_plazo(convocatorias: list[Convocatoria], dias_aviso: int) -> list[Convocatoria]:
+    """Devuelve las convocatorias cuyo plazo vence en `dias_aviso` días o menos."""
     return [
         c for c in convocatorias
         if c.dias_restantes is not None and 0 <= c.dias_restantes <= dias_aviso
@@ -560,13 +853,28 @@ def generar_alertas_plazo(convocatorias: list[Convocatoria], dias_aviso: int) ->
 
 
 # =====================================================================
-# 8 BIS. NOTIFICACIONES DE PLAZO URGENTE (Email)
+# 8 BIS. NOTIFICACIÓN DE PLAZO URGENTE POR CORREO ELECTRÓNICO
 # =====================================================================
+#
+# Este bloque envía un aviso proactivo cuando una convocatoria entra en la
+# "ventana crítica" de vencimiento (por defecto, entre 3 y 5 días antes de
+# que caduque el plazo). Es independiente de generar_alertas_plazo(), que
+# se usa para el listado más amplio del informe semanal.
+#
+# Para no repetir el mismo aviso en cada ejecución (p. ej. si el script se
+# lanza a diario con cron), se guarda un registro propio de convocatorias
+# ya notificadas en NOTIFICADAS_PATH.
+#
+# El correo remitente, su contraseña de aplicación y el servidor SMTP se
+# configuran una sola vez en el servidor (app.py / variables de entorno),
+# no en el formulario: quien usa la web solo indica a qué correo quiere
+# que llegue el aviso.
 
 NOTIFICADAS_PATH = Path("convocatorias_notificadas.json")
 
 
 def cargar_notificadas() -> set[str]:
+    """Carga el conjunto de id_unico de convocatorias ya notificadas."""
     if NOTIFICADAS_PATH.exists():
         try:
             return set(json.loads(NOTIFICADAS_PATH.read_text(encoding="utf-8")))
@@ -584,6 +892,10 @@ def guardar_notificadas(ids: set[str]) -> None:
 def generar_alertas_urgentes(
     convocatorias: list[Convocatoria], dias_min: int = 3, dias_max: int = 5
 ) -> list[Convocatoria]:
+    """
+    Devuelve las convocatorias cuyo plazo vence dentro de la ventana crítica
+    [dias_min, dias_max] (ambos incluidos). Por defecto, entre 3 y 5 días.
+    """
     return [
         c for c in convocatorias
         if c.dias_restantes is not None and dias_min <= c.dias_restantes <= dias_max
@@ -591,6 +903,8 @@ def generar_alertas_urgentes(
 
 
 def construir_mensaje_alerta(convocatorias: list[Convocatoria], municipio: str) -> str:
+    """Construye un mensaje de texto plano para el correo de alerta, con el
+    listado de convocatorias en la ventana crítica de vencimiento."""
     lineas = [f"⚠️ Alerta de plazos próximos a vencer — {municipio}", ""]
     for c in sorted(convocatorias, key=lambda x: x.dias_restantes):
         lineas.append(f"• {c.titulo}")
@@ -611,6 +925,11 @@ def enviar_email(
     smtp_server: str = "smtp.gmail.com",
     smtp_port: int = 587,
 ) -> bool:
+    """
+    Envía un correo mediante SMTP con STARTTLS. Con Gmail, `password` debe
+    ser una "contraseña de aplicación" (no la contraseña normal de la
+    cuenta): https://myaccount.google.com/apppasswords
+    """
     import smtplib
     from email.mime.text import MIMEText
 
@@ -641,6 +960,18 @@ def notificar_plazos_urgentes(
     email_cfg: Optional[dict] = None,
     ignorar_ya_notificadas: bool = True,
 ) -> dict:
+    """
+    Punto de entrada único: detecta las convocatorias en la ventana crítica
+    de vencimiento (dias_min a dias_max) y envía un correo de aviso. Evita
+    reenviar el mismo aviso en ejecuciones posteriores (salvo que
+    `ignorar_ya_notificadas=False`).
+
+    email_cfg: {"destinatarios": [...], "remitente": "...", "password": "...",
+                "smtp_server": "...", "smtp_port": 587}
+
+    Devuelve un resumen del resultado, útil para mostrar en la interfaz web
+    o en el log de la CLI.
+    """
     urgentes = generar_alertas_urgentes(convocatorias, dias_min, dias_max)
 
     if ignorar_ya_notificadas:
@@ -681,8 +1012,13 @@ def notificar_plazos_urgentes(
 
 
 # =====================================================================
-# 9. RESUMEN DE CONVOCATORIAS CON IA (Gemini)
+# 9. RESUMEN DE CONVOCATORIAS CON IA (Gemini, opcional)
 # =====================================================================
+#
+# Este módulo es equivalente al fragmento que compartiste: descarga el PDF
+# de la convocatoria, extrae su texto con PyMuPDF (fitz) y pide a Gemini
+# un resumen en JSON. Se activa solo con --usar-ia y solo si hay clave
+# disponible en GEMINI_API_KEY (o --gemini-key).
 
 PROMPT_RESUMEN_IA = """\
 Eres un asistente que ayuda a un pequeño ayuntamiento a entender convocatorias \
@@ -696,7 +1032,7 @@ esta estructura exacta:
   "plazo": "fecha o condición límite tal como aparece en el texto, o null",
   "importe": "cuantía económica si aparece, o null",
   "requisitos_clave": ["lista breve de 1 a 4 requisitos principales"],
-  "alerta_plazo_proximo": true/false
+  "alerta_plazo_proximo": true/false  // true si el plazo vence en menos de 15 días desde hoy
 }}
 
 Texto de la convocatoria:
@@ -705,15 +1041,18 @@ Texto de la convocatoria:
 
 
 def _configurar_gemini(api_key: Optional[str]) -> bool:
+    """Crea el cliente de Gemini (SDK google-genai). Devuelve False si no es posible."""
     global _GEMINI_CLIENT
 
     if genai_sdk is None:
-        print("[AVISO] Falta la librería 'google-genai'.", file=sys.stderr)
+        print("[AVISO] Falta la librería 'google-genai'. "
+              "Instala con: pip install google-genai", file=sys.stderr)
         return False
 
     clave = api_key or os.environ.get("GEMINI_API_KEY")
     if not clave:
-        print("[AVISO] No hay clave de Gemini disponible.", file=sys.stderr)
+        print("[AVISO] No hay clave de Gemini disponible. Define la variable "
+              "de entorno GEMINI_API_KEY o usa --gemini-key.", file=sys.stderr)
         return False
 
     try:
@@ -725,6 +1064,10 @@ def _configurar_gemini(api_key: Optional[str]) -> bool:
 
 
 def descargar_texto_convocatoria(conv: Convocatoria) -> Optional[str]:
+    """
+    Obtiene el texto de la convocatoria: si el enlace es un PDF lo descarga
+    y extrae el texto con PyMuPDF; si es HTML, extrae el texto de la página.
+    """
     if not conv.url:
         return None
 
@@ -739,7 +1082,8 @@ def descargar_texto_convocatoria(conv: Convocatoria) -> Optional[str]:
 
     if es_pdf:
         if fitz is None:
-            print("[AVISO] Falta 'pymupdf' para leer PDFs.", file=sys.stderr)
+            print("[AVISO] Falta 'pymupdf' para leer PDFs. "
+                  "Instala con: pip install pymupdf", file=sys.stderr)
             return None
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
             tmp.write(resp.content)
@@ -753,15 +1097,61 @@ def descargar_texto_convocatoria(conv: Convocatoria) -> Optional[str]:
         finally:
             os.unlink(ruta_tmp)
 
+    # HTML: quitamos etiquetas de forma simple si no hay BeautifulSoup
     if BeautifulSoup is not None:
         return BeautifulSoup(resp.text, "html.parser").get_text(" ", strip=True)
     return re.sub(r"<[^>]+>", " ", resp.text).strip() or None
 
 
+def completar_plazo_e_importe_con_texto_completo(
+    convocatorias: list[Convocatoria], max_documentos: int = 25
+) -> None:
+    """Respaldo por expresiones regulares (SIN IA) para cuando el título no
+    trae ni plazo ni importe.
+
+    El título de un anuncio del BOE/DOCM/BOP es, muchas veces, solo el
+    encabezado legal ("Real Decreto X/2026, de..., por el que se modifica
+    el Real Decreto Y..."), y la fecha límite o la cuantía real están en
+    algún artículo del documento completo, no en el título. Para esos casos
+    descargamos el documento (PDF o HTML, reutilizando la misma función que
+    usa el resumen con IA) y volvemos a pasarle extraer_plazo()/
+    extraer_importe() al texto íntegro.
+
+    Como implica una descarga por convocatoria, es más lento que analizar
+    solo el título, así que se limita a `max_documentos` como mucho,
+    empezando por las que no tienen NINGÚN dato (para aprovechar mejor el
+    límite). Las que ya tienen plazo e importe no se tocan.
+    """
+    pendientes = [c for c in convocatorias if not c.plazo or not c.importe]
+    pendientes.sort(key=lambda c: (c.plazo is not None) + (c.importe is not None))
+
+    for conv in pendientes[:max_documentos]:
+        texto = descargar_texto_convocatoria(conv)
+        if not texto:
+            continue
+
+        if not conv.plazo:
+            plazo, dias = extraer_plazo(texto)
+            if plazo:
+                conv.plazo = plazo
+                conv.dias_restantes = dias
+
+        if not conv.importe:
+            importe = extraer_importe(texto)
+            if importe:
+                conv.importe = importe
+
+
 def resumir_con_ia(texto: str, modelo: str = "gemini-2.5-flash-lite") -> Optional[dict]:
+    """
+    Envía el texto a Gemini y devuelve un dict con resumen, organismo, plazo,
+    importe, requisitos_clave y alerta_plazo_proximo. Devuelve None si falla.
+    """
     if _GEMINI_CLIENT is None:
         return None
 
+    # Los modelos gratuitos tienen límite de tokens de entrada; recortamos
+    # a un tamaño razonable para no agotar la cuota del tier gratuito.
     texto_recortado = texto[:15000]
 
     try:
@@ -770,23 +1160,30 @@ def resumir_con_ia(texto: str, modelo: str = "gemini-2.5-flash-lite") -> Optiona
             contents=PROMPT_RESUMEN_IA.format(texto=texto_recortado),
         )
         contenido = (respuesta.text or "").strip()
+        # Por si el modelo envuelve el JSON en ```json ... ```
         contenido = re.sub(r"^```(json)?|```$", "", contenido, flags=re.MULTILINE).strip()
         return json.loads(contenido)
     except json.JSONDecodeError:
         print("[AVISO] La IA no devolvió un JSON válido; se omite el resumen.", file=sys.stderr)
         return None
-    except Exception as e:
+    except Exception as e:  # errores de red, cuota agotada, etc.
         print(f"[AVISO] Error al llamar a Gemini: {e}", file=sys.stderr)
         return None
 
 
 def enriquecer_con_ia(convocatorias: list[Convocatoria], modelo: str, max_llamadas: int) -> None:
+    """
+    Recorre las convocatorias (hasta `max_llamadas`, para no agotar el tier
+    gratuito) y rellena/mejora resumen, organismo, plazo e importe con IA.
+    Modifica los objetos Convocatoria in-place.
+    """
     print(f"\n→ Generando resúmenes con IA (máx. {max_llamadas} convocatorias)...")
     procesadas = 0
 
     for conv in convocatorias:
         if procesadas >= max_llamadas:
-            print(f"[INFO] Límite de {max_llamadas} llamadas a la IA alcanzado.")
+            print(f"[INFO] Límite de {max_llamadas} llamadas a la IA alcanzado; "
+                  f"el resto se queda sin resumen automático.")
             break
 
         texto = descargar_texto_convocatoria(conv)
@@ -803,6 +1200,9 @@ def enriquecer_con_ia(convocatorias: list[Convocatoria], modelo: str, max_llamad
         conv.organismo = datos.get("organismo") or conv.organismo
         conv.importe = datos.get("importe") or conv.importe
 
+        # El plazo detectado por IA solo sustituye al del regex si este
+        # último no encontró nada (el regex, cuando acierta, suele ser
+        # más fiable porque trabaja con el texto literal).
         if not conv.plazo and datos.get("plazo"):
             conv.plazo = datos["plazo"]
 
@@ -811,6 +1211,8 @@ def enriquecer_con_ia(convocatorias: list[Convocatoria], modelo: str, max_llamad
             conv.resumen = f"{conv.resumen}\n- Requisitos clave: " + "; ".join(requisitos)
 
         if datos.get("alerta_plazo_proximo") and conv.dias_restantes is None:
+            # La IA detectó urgencia en el texto aunque el regex no pudo
+            # calcular los días exactos (p.ej. "próxima semana").
             conv.plazo = f"{conv.plazo or ''} ⚠️ Plazo próximo a vencer (detectado por IA)".strip()
 
 
@@ -839,14 +1241,17 @@ def ejecutar(municipio: str, provincia: str, dias_atras: int,
     print("→ Consultando BOP (plantilla de scraping)...")
     todas += fetch_bop(provincia, dias_atras)
 
+    # Filtrado por área de interés del municipio
     relevantes = [c for c in todas if coincide_area_interes(c, areas_interes)]
 
+    # Resumen en lenguaje natural con IA (opcional)
     if usar_ia:
         if _configurar_gemini(gemini_key):
             enriquecer_con_ia(relevantes, modelo=gemini_modelo, max_llamadas=max_ia)
         else:
-            print("[AVISO] Se omite el resumen con IA.", file=sys.stderr)
+            print("[AVISO] Se omite el resumen con IA (falta librería o clave).", file=sys.stderr)
 
+    # Evitar duplicados respecto a ejecuciones anteriores
     vistas = cargar_vistas()
     nuevas = [c for c in relevantes if c.id_unico not in vistas]
     vistas.update(c.id_unico for c in relevantes)
@@ -854,11 +1259,13 @@ def ejecutar(municipio: str, provincia: str, dias_atras: int,
 
     print(f"\nTotal detectadas: {len(todas)} | Relevantes para el municipio: {len(relevantes)} | Nuevas: {len(nuevas)}")
 
+    # Informe semanal (con todas las relevantes, no solo las nuevas)
     informe = generar_resumen_semanal(relevantes, municipio)
     salida_path = Path(salida)
     salida_path.write_text(informe, encoding="utf-8")
     print(f"\nResumen semanal guardado en: {salida_path.resolve()}")
 
+    # Alertas de plazo próximo (listado informativo, ventana amplia)
     alertas = generar_alertas_plazo(relevantes, dias_aviso)
     if alertas:
         print(f"\n⚠️  ALERTAS DE PLAZO PRÓXIMO A VENCER ({len(alertas)}):")
@@ -867,6 +1274,8 @@ def ejecutar(municipio: str, provincia: str, dias_atras: int,
     else:
         print("\nNo hay convocatorias con plazo próximo a vencer.")
 
+    # Notificación por email para la ventana crítica de vencimiento
+    # (por defecto, entre 3 y 5 días)
     if notificar and email_cfg:
         resultado_notif = notificar_plazos_urgentes(
             relevantes, municipio,
@@ -883,28 +1292,56 @@ def ejecutar(municipio: str, provincia: str, dias_atras: int,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Herramienta de asistencia para convocatorias públicas."
+        description="Herramienta de asistencia para convocatorias públicas — "
+                    "vigilancia automatizada de boletines oficiales."
     )
-    parser.add_argument("--municipio", default="Ayuntamiento", help="Nombre del municipio.")
-    parser.add_argument("--provincia", default="Toledo", help="Provincia para el BOP.")
-    parser.add_argument("--dias", type=int, default=7, help="Días hacia atrás a revisar.")
-    parser.add_argument("--area-interes", nargs="*", default=[], help="Áreas de interés.")
-    parser.add_argument("--plazo-alerta", type=int, default=10, help="Días para alerta de plazo.")
-    parser.add_argument("--salida", default="resumen_semanal.md", help="Ruta de salida Markdown.")
-    parser.add_argument("--usar-ia", action="store_true", help="Usa Gemini para resumir.")
-    parser.add_argument("--gemini-key", default=None, help="Clave API Gemini.")
-    parser.add_argument("--gemini-modelo", default="gemini-2.5-flash-lite", help="Modelo de Gemini.")
-    parser.add_argument("--max-ia", type=int, default=15, help="Máximo llamadas IA por ejecución.")
+    parser.add_argument("--municipio", default="Ayuntamiento",
+                         help="Nombre del municipio/entidad (para el informe).")
+    parser.add_argument("--provincia", default="Toledo",
+                         help="Provincia, para seleccionar el BOP correspondiente.")
+    parser.add_argument("--dias", type=int, default=7,
+                         help="Número de días hacia atrás a revisar en BOE/DOCM/BOP.")
+    parser.add_argument("--area-interes", nargs="*", default=[],
+                         help="Palabras clave de las áreas de interés del municipio "
+                              "(ej: cultura deporte infraestructuras). Vacío = todo.")
+    parser.add_argument("--plazo-alerta", type=int, default=10,
+                         help="Días de antelación para alertar sobre plazos que vencen.")
+    parser.add_argument("--salida", default="resumen_semanal.md",
+                         help="Ruta del fichero Markdown de salida.")
+    parser.add_argument("--usar-ia", action="store_true",
+                         help="Genera un resumen de cada convocatoria con Gemini "
+                              "(requiere GEMINI_API_KEY y 'pip install google-genai pymupdf').")
+    parser.add_argument("--gemini-key", default=None,
+                         help="Clave de la API de Gemini. Solo para pruebas puntuales; "
+                              "se recomienda usar la variable de entorno GEMINI_API_KEY.")
+    parser.add_argument("--gemini-modelo", default="gemini-2.5-flash-lite",
+                         help="Modelo de Gemini a usar (por defecto, uno económico del tier gratuito).")
+    parser.add_argument("--max-ia", type=int, default=15,
+                         help="Número máximo de convocatorias a resumir con IA por ejecución "
+                              "(para no agotar la cuota gratuita).")
 
-    parser.add_argument("--notificar", action="store_true", help="Activa envío por correo.")
-    parser.add_argument("--dias-min-urgente", type=int, default=3, help="Días mínimos urgencia.")
-    parser.add_argument("--dias-max-urgente", type=int, default=5, help="Días máximos urgencia.")
+    # --- Notificación de plazo urgente por email ---
+    parser.add_argument("--notificar", action="store_true",
+                         help="Activa el envío de un aviso por correo para convocatorias en la "
+                              "ventana crítica de vencimiento (por defecto, entre 3 y 5 días).")
+    parser.add_argument("--dias-min-urgente", type=int, default=3,
+                         help="Días mínimos restantes para considerar el plazo urgente.")
+    parser.add_argument("--dias-max-urgente", type=int, default=5,
+                         help="Días máximos restantes para considerar el plazo urgente.")
 
-    parser.add_argument("--email-destino", nargs="*", default=[], help="Destinatarios de correo.")
-    parser.add_argument("--email-remitente", default=os.environ.get("ALERTA_EMAIL_REMITENTE"), help="Remitente.")
-    parser.add_argument("--email-password", default=os.environ.get("ALERTA_EMAIL_PASSWORD"), help="Password de app.")
-    parser.add_argument("--smtp-server", default=os.environ.get("ALERTA_SMTP_SERVER", "smtp.gmail.com"), help="Servidor SMTP.")
-    parser.add_argument("--smtp-port", type=int, default=int(os.environ.get("ALERTA_SMTP_PORT", 587)), help="Puerto SMTP.")
+    parser.add_argument("--email-destino", nargs="*", default=[],
+                         help="Uno o varios correos destinatarios del aviso.")
+    parser.add_argument("--email-remitente", default=os.environ.get("ALERTA_EMAIL_REMITENTE"),
+                         help="Cuenta de correo remitente (o var. de entorno ALERTA_EMAIL_REMITENTE).")
+    parser.add_argument("--email-password", default=os.environ.get("ALERTA_EMAIL_PASSWORD"),
+                         help="Contraseña de aplicación del remitente (o var. de entorno "
+                              "ALERTA_EMAIL_PASSWORD). Con Gmail, usar una contraseña de "
+                              "aplicación: https://myaccount.google.com/apppasswords")
+    parser.add_argument("--smtp-server", default=os.environ.get("ALERTA_SMTP_SERVER", "smtp.gmail.com"),
+                         help="Servidor SMTP del remitente (por defecto, Gmail).")
+    parser.add_argument("--smtp-port", type=int,
+                         default=int(os.environ.get("ALERTA_SMTP_PORT", 587)),
+                         help="Puerto SMTP (587 = STARTTLS, habitual).")
 
     args = parser.parse_args()
 

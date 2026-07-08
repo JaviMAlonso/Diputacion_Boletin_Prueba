@@ -109,7 +109,6 @@ document.getElementById('form-busqueda').addEventListener('submit', async (ev) =
     provincia: document.getElementById('provincia').value,
     dias: document.getElementById('dias').value,
     areas: checkboxOposiciones.checked ? OPOSICIONES_KEYWORDS : document.getElementById('areas').value,
-    plazo_alerta: document.getElementById('plazo_alerta').value,
     solo_hoy: checkboxHoy.checked,
     fecha_elegida: selectFechaElegida.value,
     usar_ia: checkboxIA.checked,
@@ -195,7 +194,8 @@ function renderResultados(data) {
     } else {
       for (const item of data.bop_hoy) {
         partes.push('<div class="entrada entrada-bop-hoy">');
-        partes.push('<h4>' + escapeHtml(item.titulo) + '</h4>');
+        partes.push('<div class="fuente-linea">' + escapeHtml(item.organismo || 'Entidad no identificada') + '</div>');
+        partes.push('<h4>' + escapeHtml(item.resumen || item.titulo) + '</h4>');
         partes.push('<a class="enlace" href="' + escapeHtml(item.url_pdf) + '" target="_blank" rel="noopener">↓ Descargar PDF →</a>');
         partes.push('</div>');
       }
@@ -255,9 +255,7 @@ function renderResultados(data) {
       partes.push('<div class="datos">');
       partes.push('<span>Publicado: <b>' + escapeHtml(c.fecha_publicacion) + '</b></span>');
       partes.push('<span class="' + (urgente ? 'urgente' : '') + '">Plazo: <b>' + escapeHtml(c.plazo || 'No detectado') + '</b></span>');
-      
-        partes.push('<span class="importe">Cuantía: <b>' + escapeHtml(c.importe || 'No detectado' ) + '</b></span>');
-      
+      partes.push('<span class="importe">Cuantía: <b>' + escapeHtml(c.importe || 'No detectado') + '</b></span>');
       partes.push('</div>');
       if (c.resumen) {
         partes.push('<div class="resumen-texto">' + escapeHtml(c.resumen) + '</div>');

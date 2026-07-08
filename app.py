@@ -29,12 +29,10 @@ app = Flask(__name__)
 ULTIMO_INFORME_MD = "# Todavía no se ha generado ningún informe.\n"
 
 # Configuración del correo remitente de las alertas: se define una sola vez
-# en el servidor (variables de entorno), nunca en el formulario web. Quien
-# usa la web solo indica a qué correo quiere que llegue el aviso.
-#   Linux/macOS: export ALERTA_EMAIL_REMITENTE="alertas@gmail.com"
-#                export ALERTA_EMAIL_PASSWORD="contraseña de aplicación"
-#   Windows PowerShell: $env:ALERTA_EMAIL_REMITENTE = "alertas@gmail.com"
-#                        $env:ALERTA_EMAIL_PASSWORD = "contraseña de aplicación"
+# en el servidor, nunca en el formulario web. Quien usa la web solo indica
+# a qué correo quiere que llegue el aviso. Se puede sobrescribir con las
+# variables de entorno ALERTA_EMAIL_REMITENTE / ALERTA_EMAIL_PASSWORD si
+# se prefiere no dejarlo escrito en el código.
 EMAIL_REMITENTE = os.environ.get("ALERTA_EMAIL_REMITENTE", "alertasdiputacion@gmail.com")
 EMAIL_PASSWORD = os.environ.get("ALERTA_EMAIL_PASSWORD", "jxip jlbk tjpm nmnn")
 EMAIL_SMTP_SERVER = os.environ.get("ALERTA_SMTP_SERVER", "smtp.gmail.com")
@@ -91,13 +89,38 @@ def api_buscar():
     if solo_hoy:
         relevantes = [c for c in relevantes if c.fecha_publicacion == fecha_elegida_str]
 
+    # Respaldo SIN IA: para las convocatorias a las que no se les detectó
+    # plazo y/o importe a partir del título (habitual en Reales Decretos,
+    # órdenes que modifican otras normas, etc.), descargamos el documento
+    # completo y volvemos a intentarlo con el mismo regex. Limitado a 25
+    # documentos por búsqueda para no ralentizar demasiado ni saturar los
+    # servidores de origen.
+    try:
+        mc.completar_plazo_e_importe_con_texto_completo(relevantes, max_documentos=25)
+    except Exception as e:
+        print(f"[AVISO] No se pudo completar plazo/importe con el texto completo: {e}")
+
     bop_hoy = None
+    bop_hoy_error = None
     if solo_hoy:
         try:
             bop_hoy = mc.fetch_bop_toledo_resumen_dia(fecha_elegida)
         except Exception as e:
             bop_hoy = []
+            bop_hoy_error = str(e)
             print(f"[AVISO] No se pudo obtener el resumen diario del BOP: {e}")
+
+        # El scraper genérico de fetch_bop() (arriba) es solo una plantilla
+        # sin selectores reales, así que su contador se queda siempre en 0.
+        # El resumen diario de fetch_bop_toledo_resumen_dia() sí funciona de
+        # verdad para la provincia de Toledo, así que sustituimos ahí el
+        # contador de esa fuente por el resultado real.
+        if provincia.strip().lower() == "toledo":
+            clave_fuente = f"BOP {provincia}"
+            if bop_hoy_error:
+                fuentes_estado[clave_fuente] = {"ok": False, "error": bop_hoy_error}
+            else:
+                fuentes_estado[clave_fuente] = {"ok": True, "detectadas": len(bop_hoy)}
 
     ia_estado = None
     if usar_ia:
@@ -118,7 +141,7 @@ def api_buscar():
     # Se activa solo si el usuario ha marcado la casilla correspondiente y
     # ha indicado a qué correo(s) enviar el aviso. El remitente, su
     # contraseña de aplicación y el servidor SMTP están fijados en el
-    # servidor (variables de entorno), no en el formulario.
+    # servidor (arriba), no en el formulario.
     notif_cfg = datos.get("notificaciones") or {}
     notif_resultado = None
 
