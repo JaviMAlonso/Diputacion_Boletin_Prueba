@@ -64,10 +64,9 @@ from xml.etree import ElementTree as ET
 import requests
 
 try:
-    from bs4 import BeautifulSoup, NavigableString  # usado por los scrapers de DOCM/BOP
+    from bs4 import BeautifulSoup  # usado por los scrapers de DOCM/BOP
 except ImportError:
     BeautifulSoup = None  # se avisa en tiempo de ejecución si falta
-    NavigableString = str
 
 try:
     # SDK oficial y actualmente soportado (el paquete antiguo
@@ -487,18 +486,10 @@ def fetch_bop(provincia: str = "Toledo", dias_atras: int = 7) -> list[Convocator
 # =====================================================================
 
 def fetch_bop_toledo_resumen_dia(fecha: "date | None" = None) -> list[dict]:
-    """Devuelve una lista de dicts {titulo, resumen, organismo, url_pdf} con
-    los anuncios del BOP de Toledo publicados en la fecha indicada (por
-    defecto, hoy). No aplica ninguna clasificación ni filtro: es el listado
-    en bruto, pensado para el modo "ver solo un día concreto" de la interfaz
-    web.
-
-    Confirmado inspeccionando el HTML real de ebopResumen.jsp: cada anuncio
-    va dentro de un <div class="announce"> (con el enlace "Ver anuncio" y el
-    "Resumen/Asunto"), y cada grupo de anuncios de una misma entidad va
-    precedido de un <h3 class="publisherBlock">Anunciante : NOMBRE</h3>.
-    Recorremos el documento en orden y nos quedamos con el último
-    "publisherBlock" visto para asignárselo a los anuncios siguientes.
+    """Devuelve una lista de dicts {titulo, url_pdf} con los anuncios del
+    BOP de Toledo publicados en la fecha indicada (por defecto, hoy).
+    No aplica ninguna clasificación ni filtro: es el listado en bruto,
+    pensado para el modo "ver solo lo publicado hoy" de la interfaz web.
     """
     if BeautifulSoup is None:
         print("[AVISO] BeautifulSoup no instalado: se omite el resumen BOP.", file=sys.stderr)
@@ -522,46 +513,48 @@ def fetch_bop_toledo_resumen_dia(fecha: "date | None" = None) -> list[dict]:
 
     soup = BeautifulSoup(resp.text, "html.parser")
     resultados: list[dict] = []
-    vistos: set[tuple[str, str]] = set()
-    organismo_actual: Optional[str] = None
+    vistos: set[str] = set()
 
-    for el in soup.find_all(["h3", "div"]):
-        clases = el.get("class") or []
-
-        if "publisherBlock" in clases:
-            texto = el.get_text(" ", strip=True)
-            m = re.search(r"anunciante\s*:\s*(.+)", texto, re.IGNORECASE)
-            organismo_actual = (m.group(1) if m else texto).strip()
+    # Cada anuncio incluye un enlace "Ver anuncio" que lleva al PDF (o a
+    # una ficha con el PDF incrustado). Buscamos ese enlace y, a partir
+    # de su bloque contenedor, extraemos el título en "Resumen/Asunto".
+    for enlace in soup.find_all("a"):
+        texto_enlace = enlace.get_text(strip=True).lower()
+        if "ver anuncio" not in texto_enlace:
             continue
 
-        if "announce" not in clases:
-            continue
-
-        enlace = el.find("a", href=True)
-        if enlace is None:
-            continue
-        href = enlace["href"].strip()
+        href = enlace.get("href", "").strip()
         if not href:
             continue
         url_pdf = href if href.startswith("http") else f"https://bop.diputoledo.es{href}"
 
-        texto_bloque = el.get_text(" ", strip=True)
-        m_resumen = re.search(r"resumen/asunto\s*:?\s*(.+)", texto_bloque, re.IGNORECASE)
-        resumen = m_resumen.group(1).strip() if m_resumen else ""
-        if not resumen:
+        # Subimos hasta encontrar el bloque que contiene también el
+        # "Resumen/Asunto" de este mismo anuncio (evita coger el título
+        # de otro anuncio vecino si el contenedor es demasiado amplio).
+        contenedor = enlace
+        titulo = ""
+        for _ in range(6):
+            contenedor = contenedor.find_parent()
+            if contenedor is None:
+                break
+            texto_bloque = contenedor.get_text(" ", strip=True)
+            if "resumen/asunto" in texto_bloque.lower():
+                partes = re.split(r"resumen/asunto\s*:?\s*", texto_bloque, flags=re.IGNORECASE)
+                if len(partes) > 1:
+                    titulo = partes[-1].strip()
+                break
+
+        if not titulo:
             continue
 
-        clave = (resumen, url_pdf)
+        # Evita duplicados (el mismo anuncio puede aparecer en más de
+        # un bloque anidado durante la búsqueda hacia arriba).
+        clave = (titulo, url_pdf)
         if clave in vistos:
             continue
         vistos.add(clave)
 
-        resultados.append({
-            "titulo": resumen,
-            "resumen": resumen,
-            "organismo": organismo_actual or "Entidad no identificada",
-            "url_pdf": url_pdf,
-        })
+        resultados.append({"titulo": titulo, "url_pdf": url_pdf})
 
     return resultados
 
@@ -609,6 +602,165 @@ def generar_alertas_plazo(convocatorias: list[Convocatoria], dias_aviso: int) ->
         c for c in convocatorias
         if c.dias_restantes is not None and 0 <= c.dias_restantes <= dias_aviso
     ]
+
+
+# =====================================================================
+# 8 BIS. NOTIFICACIONES DE PLAZO URGENTE (Email)
+# =====================================================================
+#
+# Este bloque envía un aviso proactivo cuando una convocatoria entra en la
+# "ventana crítica" de vencimiento (por defecto, entre 3 y 5 días antes de
+# que caduque el plazo). Es independiente de generar_alertas_plazo(), que
+# se usa para el listado más amplio del informe semanal.
+#
+# Para no repetir el mismo aviso en cada ejecución (p. ej. si el script se
+# lanza a diario con cron), se guarda un registro propio de convocatorias
+# ya notificadas en NOTIFICADAS_PATH.
+#
+# El correo remitente, su contraseña de aplicación y el servidor SMTP se
+# configuran una sola vez en el servidor (variables de entorno), no en el
+# formulario: quien usa la web solo indica a qué correo quiere que llegue
+# el aviso.
+
+NOTIFICADAS_PATH = Path("convocatorias_notificadas.json")
+
+
+def cargar_notificadas() -> set[str]:
+    """Carga el conjunto de id_unico de convocatorias ya notificadas."""
+    if NOTIFICADAS_PATH.exists():
+        try:
+            return set(json.loads(NOTIFICADAS_PATH.read_text(encoding="utf-8")))
+        except json.JSONDecodeError:
+            return set()
+    return set()
+
+
+def guardar_notificadas(ids: set[str]) -> None:
+    NOTIFICADAS_PATH.write_text(
+        json.dumps(sorted(ids), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def generar_alertas_urgentes(
+    convocatorias: list[Convocatoria], dias_min: int = 3, dias_max: int = 5
+) -> list[Convocatoria]:
+    """
+    Devuelve las convocatorias cuyo plazo vence dentro de la ventana crítica
+    [dias_min, dias_max] (ambos incluidos). Por defecto, entre 3 y 5 días.
+    """
+    return [
+        c for c in convocatorias
+        if c.dias_restantes is not None and dias_min <= c.dias_restantes <= dias_max
+    ]
+
+
+def construir_mensaje_alerta(convocatorias: list[Convocatoria], municipio: str) -> str:
+    """Construye un mensaje de texto plano para el correo de alerta, con el
+    listado de convocatorias en la ventana crítica de vencimiento."""
+    lineas = [f"⚠️ Alerta de plazos próximos a vencer — {municipio}", ""]
+    for c in sorted(convocatorias, key=lambda x: x.dias_restantes):
+        lineas.append(f"• {c.titulo}")
+        lineas.append(f"  Quedan {c.dias_restantes} día(s) · Fuente: {c.fuente}")
+        if c.organismo:
+            lineas.append(f"  Organismo: {c.organismo}")
+        lineas.append(f"  Enlace: {c.url}")
+        lineas.append("")
+    return "\n".join(lineas).strip()
+
+
+def enviar_email(
+    destinatarios: list[str],
+    asunto: str,
+    cuerpo: str,
+    remitente: str,
+    password: str,
+    smtp_server: str = "smtp.gmail.com",
+    smtp_port: int = 587,
+) -> bool:
+    """
+    Envía un correo mediante SMTP con STARTTLS. Con Gmail, `password` debe
+    ser una "contraseña de aplicación" (no la contraseña normal de la
+    cuenta): https://myaccount.google.com/apppasswords
+    """
+    import smtplib
+    from email.mime.text import MIMEText
+
+    if not destinatarios or not remitente or not password:
+        return False
+
+    mensaje = MIMEText(cuerpo, "plain", "utf-8")
+    mensaje["Subject"] = asunto
+    mensaje["From"] = remitente
+    mensaje["To"] = ", ".join(destinatarios)
+
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port, timeout=15) as servidor:
+            servidor.starttls()
+            servidor.login(remitente, password)
+            servidor.sendmail(remitente, destinatarios, mensaje.as_string())
+        return True
+    except Exception as e:
+        print(f"[AVISO] No se pudo enviar el correo de alerta: {e}", file=sys.stderr)
+        return False
+
+
+def notificar_plazos_urgentes(
+    convocatorias: list[Convocatoria],
+    municipio: str,
+    dias_min: int = 3,
+    dias_max: int = 5,
+    email_cfg: Optional[dict] = None,
+    ignorar_ya_notificadas: bool = True,
+) -> dict:
+    """
+    Punto de entrada único: detecta las convocatorias en la ventana crítica
+    de vencimiento (dias_min a dias_max) y envía un correo de aviso. Evita
+    reenviar el mismo aviso en ejecuciones posteriores (salvo que
+    `ignorar_ya_notificadas=False`).
+
+    email_cfg: {"destinatarios": [...], "remitente": "...", "password": "...",
+                "smtp_server": "...", "smtp_port": 587}
+
+    Devuelve un resumen del resultado, útil para mostrar en la interfaz web
+    o en el log de la CLI.
+    """
+    urgentes = generar_alertas_urgentes(convocatorias, dias_min, dias_max)
+
+    if ignorar_ya_notificadas:
+        ya_notificadas = cargar_notificadas()
+        a_notificar = [c for c in urgentes if c.id_unico not in ya_notificadas]
+    else:
+        a_notificar = urgentes
+
+    resultado = {
+        "urgentes_detectadas": len(urgentes),
+        "nuevas_a_notificar": len(a_notificar),
+        "email": None,
+    }
+
+    if not a_notificar:
+        return resultado
+
+    mensaje = construir_mensaje_alerta(a_notificar, municipio)
+    asunto = f"⚠️ {len(a_notificar)} convocatoria(s) próximas a vencer — {municipio}"
+
+    if email_cfg:
+        ok = enviar_email(
+            destinatarios=email_cfg.get("destinatarios", []),
+            asunto=asunto,
+            cuerpo=mensaje,
+            remitente=email_cfg.get("remitente", ""),
+            password=email_cfg.get("password", ""),
+            smtp_server=email_cfg.get("smtp_server", "smtp.gmail.com"),
+            smtp_port=int(email_cfg.get("smtp_port", 587)),
+        )
+        resultado["email"] = "ok" if ok else "error"
+
+    if ignorar_ya_notificadas:
+        ya_notificadas.update(c.id_unico for c in a_notificar)
+        guardar_notificadas(ya_notificadas)
+
+    return resultado
 
 
 # =====================================================================
@@ -784,7 +936,9 @@ def enriquecer_con_ia(convocatorias: list[Convocatoria], modelo: str, max_llamad
 def ejecutar(municipio: str, provincia: str, dias_atras: int,
              areas_interes: list[str], dias_aviso: int, salida: str,
              usar_ia: bool = False, gemini_key: Optional[str] = None,
-             gemini_modelo: str = "gemini-2.5-flash-lite", max_ia: int = 15) -> None:
+             gemini_modelo: str = "gemini-2.5-flash-lite", max_ia: int = 15,
+             notificar: bool = False, dias_min_urgente: int = 3,
+             dias_max_urgente: int = 5, email_cfg: Optional[dict] = None) -> None:
 
     print(f"Monitorizando fuentes oficiales para: {municipio}")
     print(f"Provincia: {provincia} | Últimos {dias_atras} días | Alerta de plazo: {dias_aviso} días\n")
@@ -824,7 +978,7 @@ def ejecutar(municipio: str, provincia: str, dias_atras: int,
     salida_path.write_text(informe, encoding="utf-8")
     print(f"\nResumen semanal guardado en: {salida_path.resolve()}")
 
-    # Alertas de plazo próximo
+    # Alertas de plazo próximo (listado informativo, ventana amplia)
     alertas = generar_alertas_plazo(relevantes, dias_aviso)
     if alertas:
         print(f"\n⚠️  ALERTAS DE PLAZO PRÓXIMO A VENCER ({len(alertas)}):")
@@ -832,6 +986,21 @@ def ejecutar(municipio: str, provincia: str, dias_atras: int,
             print(f"  - [{a.dias_restantes} días] {a.titulo}  ->  {a.url}")
     else:
         print("\nNo hay convocatorias con plazo próximo a vencer.")
+
+    # Notificación por email para la ventana crítica de vencimiento
+    # (por defecto, entre 3 y 5 días)
+    if notificar and email_cfg:
+        resultado_notif = notificar_plazos_urgentes(
+            relevantes, municipio,
+            dias_min=dias_min_urgente, dias_max=dias_max_urgente,
+            email_cfg=email_cfg,
+        )
+        print(
+            f"\n📣 Notificaciones urgentes ({dias_min_urgente}-{dias_max_urgente} días): "
+            f"{resultado_notif['urgentes_detectadas']} detectadas, "
+            f"{resultado_notif['nuevas_a_notificar']} nuevas notificadas "
+            f"(email={resultado_notif['email']})"
+        )
 
 
 def main():
@@ -863,7 +1032,41 @@ def main():
     parser.add_argument("--max-ia", type=int, default=15,
                          help="Número máximo de convocatorias a resumir con IA por ejecución "
                               "(para no agotar la cuota gratuita).")
+
+    # --- Notificación de plazo urgente por email ---
+    parser.add_argument("--notificar", action="store_true",
+                         help="Activa el envío de un aviso por correo para convocatorias en la "
+                              "ventana crítica de vencimiento (por defecto, entre 3 y 5 días).")
+    parser.add_argument("--dias-min-urgente", type=int, default=3,
+                         help="Días mínimos restantes para considerar el plazo urgente.")
+    parser.add_argument("--dias-max-urgente", type=int, default=5,
+                         help="Días máximos restantes para considerar el plazo urgente.")
+
+    parser.add_argument("--email-destino", nargs="*", default=[],
+                         help="Uno o varios correos destinatarios del aviso.")
+    parser.add_argument("--email-remitente", default=os.environ.get("ALERTA_EMAIL_REMITENTE"),
+                         help="Cuenta de correo remitente (o var. de entorno ALERTA_EMAIL_REMITENTE).")
+    parser.add_argument("--email-password", default=os.environ.get("ALERTA_EMAIL_PASSWORD"),
+                         help="Contraseña de aplicación del remitente (o var. de entorno "
+                              "ALERTA_EMAIL_PASSWORD). Con Gmail, usar una contraseña de "
+                              "aplicación: https://myaccount.google.com/apppasswords")
+    parser.add_argument("--smtp-server", default=os.environ.get("ALERTA_SMTP_SERVER", "smtp.gmail.com"),
+                         help="Servidor SMTP del remitente (por defecto, Gmail).")
+    parser.add_argument("--smtp-port", type=int,
+                         default=int(os.environ.get("ALERTA_SMTP_PORT", 587)),
+                         help="Puerto SMTP (587 = STARTTLS, habitual).")
+
     args = parser.parse_args()
+
+    email_cfg = None
+    if args.email_destino and args.email_remitente and args.email_password:
+        email_cfg = {
+            "destinatarios": args.email_destino,
+            "remitente": args.email_remitente,
+            "password": args.email_password,
+            "smtp_server": args.smtp_server,
+            "smtp_port": args.smtp_port,
+        }
 
     ejecutar(
         municipio=args.municipio,
@@ -876,6 +1079,10 @@ def main():
         gemini_key=args.gemini_key,
         gemini_modelo=args.gemini_modelo,
         max_ia=args.max_ia,
+        notificar=args.notificar,
+        dias_min_urgente=args.dias_min_urgente,
+        dias_max_urgente=args.dias_max_urgente,
+        email_cfg=email_cfg,
     )
 
 
