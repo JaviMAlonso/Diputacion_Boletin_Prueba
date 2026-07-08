@@ -14,7 +14,6 @@ Luego abre http://127.0.0.1:5000 en el navegador.
 """
 
 import io
-import os
 from dataclasses import asdict
 from datetime import date, datetime
 
@@ -27,18 +26,6 @@ app = Flask(__name__)
 # Guardamos en memoria el último informe generado para poder descargarlo
 # como Markdown sin tener que rehacer las búsquedas.
 ULTIMO_INFORME_MD = "# Todavía no se ha generado ningún informe.\n"
-
-# Configuración del correo remitente de las alertas: se define una sola vez
-# en el servidor (variables de entorno), nunca en el formulario web. Quien
-# usa la web solo indica a qué correo quiere que llegue el aviso.
-#   Linux/macOS: export ALERTA_EMAIL_REMITENTE="alertas@gmail.com"
-#                export ALERTA_EMAIL_PASSWORD="contraseña de aplicación"
-#   Windows PowerShell: $env:ALERTA_EMAIL_REMITENTE = "alertas@gmail.com"
-#                        $env:ALERTA_EMAIL_PASSWORD = "contraseña de aplicación"
-EMAIL_REMITENTE = os.environ.get("ALERTA_EMAIL_REMITENTE", "alertasdiputacion@gmail.com")
-EMAIL_PASSWORD = os.environ.get("ALERTA_EMAIL_PASSWORD", "jxip jlbk tjpm nmnn")
-EMAIL_SMTP_SERVER = os.environ.get("ALERTA_SMTP_SERVER", "smtp.gmail.com")
-EMAIL_SMTP_PORT = int(os.environ.get("ALERTA_SMTP_PORT", 587))
 
 
 @app.route("/")
@@ -91,13 +78,38 @@ def api_buscar():
     if solo_hoy:
         relevantes = [c for c in relevantes if c.fecha_publicacion == fecha_elegida_str]
 
+    # Respaldo SIN IA: para las convocatorias a las que no se les detectó
+    # plazo y/o importe a partir del título (habitual en Reales Decretos,
+    # órdenes que modifican otras normas, etc.), descargamos el documento
+    # completo y volvemos a intentarlo con el mismo regex. Limitado a 25
+    # documentos por búsqueda para no ralentizar demasiado ni saturar los
+    # servidores de origen.
+    try:
+        mc.completar_plazo_e_importe_con_texto_completo(relevantes, max_documentos=25)
+    except Exception as e:
+        print(f"[AVISO] No se pudo completar plazo/importe con el texto completo: {e}")
+
     bop_hoy = None
+    bop_hoy_error = None
     if solo_hoy:
         try:
             bop_hoy = mc.fetch_bop_toledo_resumen_dia(fecha_elegida)
         except Exception as e:
             bop_hoy = []
+            bop_hoy_error = str(e)
             print(f"[AVISO] No se pudo obtener el resumen diario del BOP: {e}")
+
+        # El scraper genérico de fetch_bop() (arriba) es solo una plantilla
+        # sin selectores reales, así que su contador se queda siempre en 0.
+        # El resumen diario de fetch_bop_toledo_resumen_dia() sí funciona de
+        # verdad para la provincia de Toledo, así que sustituimos ahí el
+        # contador de esa fuente por el resultado real.
+        if provincia.strip().lower() == "toledo":
+            clave_fuente = f"BOP {provincia}"
+            if bop_hoy_error:
+                fuentes_estado[clave_fuente] = {"ok": False, "error": bop_hoy_error}
+            else:
+                fuentes_estado[clave_fuente] = {"ok": True, "detectadas": len(bop_hoy)}
 
     ia_estado = None
     if usar_ia:
@@ -114,46 +126,6 @@ def api_buscar():
 
     ULTIMO_INFORME_MD = mc.generar_resumen_semanal(relevantes, municipio)
 
-    # --- Notificación de plazo urgente por correo electrónico ---
-    # Se activa solo si el usuario ha marcado la casilla correspondiente y
-    # ha indicado a qué correo(s) enviar el aviso. El remitente, su
-    # contraseña de aplicación y el servidor SMTP están fijados en el
-    # servidor (variables de entorno), no en el formulario.
-    notif_cfg = datos.get("notificaciones") or {}
-    notif_resultado = None
-
-    if notif_cfg.get("activar"):
-        dias_min = max(0, int(notif_cfg.get("dias_min") or 3))
-        dias_max = max(dias_min, int(notif_cfg.get("dias_max") or 5))
-
-        destinatarios = [
-            d.strip() for d in (notif_cfg.get("email_destino") or "").split(",") if d.strip()
-        ]
-
-        if not destinatarios:
-            notif_resultado = {"error": "Indica al menos un correo destinatario."}
-        elif not (EMAIL_REMITENTE and EMAIL_PASSWORD):
-            notif_resultado = {
-                "error": "El servidor no tiene configurado el correo remitente "
-                         "(variables de entorno ALERTA_EMAIL_REMITENTE / ALERTA_EMAIL_PASSWORD)."
-            }
-        else:
-            email_cfg = {
-                "destinatarios": destinatarios,
-                "remitente": EMAIL_REMITENTE,
-                "password": EMAIL_PASSWORD,
-                "smtp_server": EMAIL_SMTP_SERVER,
-                "smtp_port": EMAIL_SMTP_PORT,
-            }
-            try:
-                notif_resultado = mc.notificar_plazos_urgentes(
-                    relevantes, municipio,
-                    dias_min=dias_min, dias_max=dias_max,
-                    email_cfg=email_cfg,
-                )
-            except Exception as e:
-                notif_resultado = {"error": str(e)}
-
     return jsonify({
         "total_detectadas": len(todas),
         "total_relevantes": len(relevantes),
@@ -163,7 +135,6 @@ def api_buscar():
         "alertas_ids": list(alertas_ids),
         "bop_hoy": bop_hoy,
         "fecha_bop": fecha_elegida_str if solo_hoy else None,
-        "notificaciones": notif_resultado,
     })
 
 

@@ -9,13 +9,6 @@ checkboxIA.addEventListener('change', () => {
   camposIA.classList.toggle('visible', checkboxIA.checked);
 });
 
-// --- Notificación de plazo urgente por correo electrónico ---
-const checkboxNotif = document.getElementById('notif_activar');
-const camposNotif = document.getElementById('notif-campos');
-checkboxNotif.addEventListener('change', () => {
-  camposNotif.classList.toggle('visible', checkboxNotif.checked);
-});
-
 const OPOSICIONES_KEYWORDS = 'oposición, oposiciones, proceso selectivo, pruebas selectivas, concurso-oposición, bolsa de trabajo, bolsa de empleo, oferta de empleo público, personal funcionario, personal laboral, tribunal calificador';
 
 const checkboxOposiciones = document.getElementById('solo_oposiciones');
@@ -109,19 +102,12 @@ document.getElementById('form-busqueda').addEventListener('submit', async (ev) =
     provincia: document.getElementById('provincia').value,
     dias: document.getElementById('dias').value,
     areas: checkboxOposiciones.checked ? OPOSICIONES_KEYWORDS : document.getElementById('areas').value,
-    plazo_alerta: document.getElementById('plazo_alerta').value,
     solo_hoy: checkboxHoy.checked,
     fecha_elegida: selectFechaElegida.value,
     usar_ia: checkboxIA.checked,
     gemini_key: document.getElementById('gemini_key').value,
     gemini_modelo: document.getElementById('gemini_modelo').value,
     max_ia: document.getElementById('max_ia').value,
-    notificaciones: {
-      activar: checkboxNotif.checked,
-      dias_min: document.getElementById('notif_dias_min').value,
-      dias_max: document.getElementById('notif_dias_max').value,
-      email_destino: document.getElementById('notif_email_destino').value,
-    },
   };
 
   try {
@@ -161,22 +147,6 @@ function renderResultados(data) {
   } else if (data.ia_estado && data.ia_estado.startsWith('error')) {
     partes.push('<span class="pastilla fail">IA: ' + escapeHtml(data.ia_estado) + '</span>');
   }
-
-  // Estado de la notificación de plazo urgente por correo
-  const notif = data.notificaciones;
-  if (notif) {
-    if (notif.error) {
-      partes.push('<span class="pastilla fail">Aviso por correo: ' + escapeHtml(notif.error) + '</span>');
-    } else if (notif.email === 'ok') {
-      partes.push('<span class="pastilla ok">✓ Aviso por correo enviado</span>');
-    } else if (notif.email === 'error') {
-      partes.push('<span class="pastilla fail">Aviso por correo: error al enviar</span>');
-    } else if (notif.urgentes_detectadas === 0) {
-      partes.push('<span class="pastilla ok">Sin plazos en la ventana crítica</span>');
-    } else if (notif.nuevas_a_notificar === 0) {
-      partes.push('<span class="pastilla ok">' + notif.urgentes_detectadas + ' urgente(s), ya notificada(s) antes</span>');
-    }
-  }
   partes.push('</div>');
 
   // Cabecera de resumen + descarga
@@ -195,7 +165,8 @@ function renderResultados(data) {
     } else {
       for (const item of data.bop_hoy) {
         partes.push('<div class="entrada entrada-bop-hoy">');
-        partes.push('<h4>' + escapeHtml(item.titulo) + '</h4>');
+        partes.push('<div class="fuente-linea">' + escapeHtml(item.organismo || 'Entidad no identificada') + '</div>');
+        partes.push('<h4>' + escapeHtml(item.resumen || item.titulo) + '</h4>');
         partes.push('<a class="enlace" href="' + escapeHtml(item.url_pdf) + '" target="_blank" rel="noopener">↓ Descargar PDF →</a>');
         partes.push('</div>');
       }
@@ -255,9 +226,7 @@ function renderResultados(data) {
       partes.push('<div class="datos">');
       partes.push('<span>Publicado: <b>' + escapeHtml(c.fecha_publicacion) + '</b></span>');
       partes.push('<span class="' + (urgente ? 'urgente' : '') + '">Plazo: <b>' + escapeHtml(c.plazo || 'No detectado') + '</b></span>');
-      
-        partes.push('<span class="importe">Cuantía: <b>' + escapeHtml(c.importe || 'No detectado' ) + '</b></span>');
-      
+      partes.push('<span class="importe">Cuantía: <b>' + escapeHtml(c.importe || 'No detectado') + '</b></span>');
       partes.push('</div>');
       if (c.resumen) {
         partes.push('<div class="resumen-texto">' + escapeHtml(c.resumen) + '</div>');
