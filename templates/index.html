@@ -61,7 +61,7 @@
         </div>
         <p class="ia-nota" id="nota-hoy" style="display:none;">Filtro activo: solo se mostrarán convocatorias cuya fecha de publicación sea la elegida arriba. En BOE esto es exacto (fecha real del sumario diario); en DOCM y BOP (clasificación) equivale a «detectado en esta consulta». Además, se mostrará un listado aparte con el resumen diario real del BOP de Toledo para ese mismo día: título y enlace de descarga de cada anuncio, sin filtrar por área.</p>
       </div>
-      <p> </p>
+<p></p>
       <div class="campo toggle-oposiciones">
         <label class="toggle-linea">
           <input type="checkbox" id="solo_oposiciones">
@@ -93,10 +93,7 @@
           <p class="ia-nota" id="nota-oposiciones" style="display:none;">Filtro activo: se buscarán únicamente oposiciones, procesos selectivos, bolsas de trabajo y ofertas de empleo público. El menú de áreas queda deshabilitado mientras esta opción esté marcada.</p>
       </div>
 
-      <div class="campo">
-        <label for="plazo_alerta">Avisar si el plazo vence en (días)</label>
-        <input type="number" id="plazo_alerta" value="10" min="1" max="90">
-      </div>
+      <button type="submit" class="buscar" id="btn-buscar">Buscar convocatorias</button>
 
       <div class="toggle-ia">
         <label class="toggle-linea">
@@ -122,34 +119,6 @@
           <p class="ia-nota">Consigue una clave gratuita en aistudio.google.com/apikey. La clave viaja únicamente a tu propio servidor local (127.0.0.1) y no se almacena en disco.</p>
         </div>
       </div>
-
-      <div class="toggle-ia">
-        <label class="toggle-linea">
-          <input type="checkbox" id="notif_activar">
-          <span>Avisarme por correo cuando un plazo esté a punto de vencer (3-5 días antes)</span>
-        </label>
-
-        <div class="ia-campos" id="notif-campos">
-          <div class="fila-2">
-            <div class="campo">
-              <label for="notif_dias_min">Avisar desde (días restantes)</label>
-              <input type="number" id="notif_dias_min" value="3" min="0" max="30">
-            </div>
-            <div class="campo">
-              <label for="notif_dias_max">Avisar hasta (días restantes)</label>
-              <input type="number" id="notif_dias_max" value="5" min="0" max="30">
-            </div>
-          </div>
-
-          <div class="campo">
-            <label for="notif_email_destino">Correo donde recibir el aviso</label>
-            <input type="text" id="notif_email_destino" placeholder="ayuntamiento@ejemplo.es">
-          </div>
-          <p class="ia-nota">Puedes indicar varios correos separados por comas.</p>
-        </div>
-      </div>
-
-      <button type="submit" class="buscar" id="btn-buscar">Buscar convocatorias</button>
     </form>
   </section>
 
