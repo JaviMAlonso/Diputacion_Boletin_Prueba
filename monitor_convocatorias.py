@@ -64,9 +64,10 @@ from xml.etree import ElementTree as ET
 import requests
 
 try:
-    from bs4 import BeautifulSoup  # usado por los scrapers de DOCM/BOP
+    from bs4 import BeautifulSoup, NavigableString  # usado por los scrapers de DOCM/BOP
 except ImportError:
     BeautifulSoup = None  # se avisa en tiempo de ejecución si falta
+    NavigableString = str
 
 try:
     # SDK oficial y actualmente soportado (el paquete antiguo
@@ -486,10 +487,18 @@ def fetch_bop(provincia: str = "Toledo", dias_atras: int = 7) -> list[Convocator
 # =====================================================================
 
 def fetch_bop_toledo_resumen_dia(fecha: "date | None" = None) -> list[dict]:
-    """Devuelve una lista de dicts {titulo, url_pdf} con los anuncios del
-    BOP de Toledo publicados en la fecha indicada (por defecto, hoy).
-    No aplica ninguna clasificación ni filtro: es el listado en bruto,
-    pensado para el modo "ver solo lo publicado hoy" de la interfaz web.
+    """Devuelve una lista de dicts {titulo, resumen, organismo, url_pdf} con
+    los anuncios del BOP de Toledo publicados en la fecha indicada (por
+    defecto, hoy). No aplica ninguna clasificación ni filtro: es el listado
+    en bruto, pensado para el modo "ver solo un día concreto" de la interfaz
+    web.
+
+    Confirmado inspeccionando el HTML real de ebopResumen.jsp: cada anuncio
+    va dentro de un <div class="announce"> (con el enlace "Ver anuncio" y el
+    "Resumen/Asunto"), y cada grupo de anuncios de una misma entidad va
+    precedido de un <h3 class="publisherBlock">Anunciante : NOMBRE</h3>.
+    Recorremos el documento en orden y nos quedamos con el último
+    "publisherBlock" visto para asignárselo a los anuncios siguientes.
     """
     if BeautifulSoup is None:
         print("[AVISO] BeautifulSoup no instalado: se omite el resumen BOP.", file=sys.stderr)
@@ -513,48 +522,46 @@ def fetch_bop_toledo_resumen_dia(fecha: "date | None" = None) -> list[dict]:
 
     soup = BeautifulSoup(resp.text, "html.parser")
     resultados: list[dict] = []
-    vistos: set[str] = set()
+    vistos: set[tuple[str, str]] = set()
+    organismo_actual: Optional[str] = None
 
-    # Cada anuncio incluye un enlace "Ver anuncio" que lleva al PDF (o a
-    # una ficha con el PDF incrustado). Buscamos ese enlace y, a partir
-    # de su bloque contenedor, extraemos el título en "Resumen/Asunto".
-    for enlace in soup.find_all("a"):
-        texto_enlace = enlace.get_text(strip=True).lower()
-        if "ver anuncio" not in texto_enlace:
+    for el in soup.find_all(["h3", "div"]):
+        clases = el.get("class") or []
+
+        if "publisherBlock" in clases:
+            texto = el.get_text(" ", strip=True)
+            m = re.search(r"anunciante\s*:\s*(.+)", texto, re.IGNORECASE)
+            organismo_actual = (m.group(1) if m else texto).strip()
             continue
 
-        href = enlace.get("href", "").strip()
+        if "announce" not in clases:
+            continue
+
+        enlace = el.find("a", href=True)
+        if enlace is None:
+            continue
+        href = enlace["href"].strip()
         if not href:
             continue
         url_pdf = href if href.startswith("http") else f"https://bop.diputoledo.es{href}"
 
-        # Subimos hasta encontrar el bloque que contiene también el
-        # "Resumen/Asunto" de este mismo anuncio (evita coger el título
-        # de otro anuncio vecino si el contenedor es demasiado amplio).
-        contenedor = enlace
-        titulo = ""
-        for _ in range(6):
-            contenedor = contenedor.find_parent()
-            if contenedor is None:
-                break
-            texto_bloque = contenedor.get_text(" ", strip=True)
-            if "resumen/asunto" in texto_bloque.lower():
-                partes = re.split(r"resumen/asunto\s*:?\s*", texto_bloque, flags=re.IGNORECASE)
-                if len(partes) > 1:
-                    titulo = partes[-1].strip()
-                break
-
-        if not titulo:
+        texto_bloque = el.get_text(" ", strip=True)
+        m_resumen = re.search(r"resumen/asunto\s*:?\s*(.+)", texto_bloque, re.IGNORECASE)
+        resumen = m_resumen.group(1).strip() if m_resumen else ""
+        if not resumen:
             continue
 
-        # Evita duplicados (el mismo anuncio puede aparecer en más de
-        # un bloque anidado durante la búsqueda hacia arriba).
-        clave = (titulo, url_pdf)
+        clave = (resumen, url_pdf)
         if clave in vistos:
             continue
         vistos.add(clave)
 
-        resultados.append({"titulo": titulo, "url_pdf": url_pdf})
+        resultados.append({
+            "titulo": resumen,
+            "resumen": resumen,
+            "organismo": organismo_actual or "Entidad no identificada",
+            "url_pdf": url_pdf,
+        })
 
     return resultados
 

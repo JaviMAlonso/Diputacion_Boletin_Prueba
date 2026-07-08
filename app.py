@@ -79,12 +79,26 @@ def api_buscar():
         relevantes = [c for c in relevantes if c.fecha_publicacion == fecha_elegida_str]
 
     bop_hoy = None
+    bop_hoy_error = None
     if solo_hoy:
         try:
             bop_hoy = mc.fetch_bop_toledo_resumen_dia(fecha_elegida)
         except Exception as e:
             bop_hoy = []
+            bop_hoy_error = str(e)
             print(f"[AVISO] No se pudo obtener el resumen diario del BOP: {e}")
+
+        # El scraper genérico de fetch_bop() (arriba) es solo una plantilla
+        # sin selectores reales, así que su contador se queda siempre en 0.
+        # El resumen diario de fetch_bop_toledo_resumen_dia() sí funciona de
+        # verdad para la provincia de Toledo, así que sustituimos ahí el
+        # contador de esa fuente por el resultado real.
+        if provincia.strip().lower() == "toledo":
+            clave_fuente = f"BOP {provincia}"
+            if bop_hoy_error:
+                fuentes_estado[clave_fuente] = {"ok": False, "error": bop_hoy_error}
+            else:
+                fuentes_estado[clave_fuente] = {"ok": True, "detectadas": len(bop_hoy)}
 
     ia_estado = None
     if usar_ia:
