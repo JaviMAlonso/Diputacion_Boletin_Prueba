@@ -52,7 +52,7 @@
           </div>
           <div class="campo">
             <label for="dias">Días hacia atrás</label>
-            <input type="number" id="dias" value="7" min="1" max="300">
+            <input type="number" id="dias" value="7" min="1" max="30">
           </div>
         </div>
 
@@ -127,7 +127,7 @@
               </div>
               <div class="campo">
                 <label for="max_ia">Máx. resúmenes</label>
-                <input type="number" id="max_ia" value="10" min="1" max="300">
+                <input type="number" id="max_ia" value="10" min="1" max="30">
               </div>
             </div>
             <p class="ia-nota">Consigue una clave gratuita en aistudio.google.com/apikey. La clave viaja únicamente a tu
@@ -149,11 +149,11 @@
             <div class="fila-2">
               <div class="campo">
                 <label for="notif_dias_min">Avisar desde (días restantes)</label>
-                <input type="number" id="notif_dias_min" value="3" min="1" max="300">
+                <input type="number" id="notif_dias_min" value="3" min="1" max="30">
               </div>
               <div class="campo">
                 <label for="notif_dias_max">Avisar hasta (días restantes)</label>
-                <input type="number" id="notif_dias_max" value="5" min="1" max="300">
+                <input type="number" id="notif_dias_max" value="5" min="1" max="30">
               </div>
             </div>
             <p class="ia-nota">Pulsa "Conectar mi Telegram" y dale a Iniciar en el chat que se abre — solo hace falta una vez. Nunca se avisa el mismo día en que vence el plazo (0 días restantes).</p>
@@ -163,9 +163,19 @@
     </section>
 
     <!-- ---------- Resultados ---------- -->
-    <section id="resultados">
-      <div class="vacio">Rellena la ficha de búsqueda y pulsa «Buscar convocatorias» para consultar los boletines.</div>
-    </section>
+    <!-- Todo esto va envuelto en un único div porque main.ficha usa
+         CSS grid de 2 columnas (ficha | resultados): si la barra y la
+         sección de resultados fueran hijos sueltos de <main>, el grid
+         las repartiría como si fueran celdas independientes y se
+         descuadraría todo. Como bloque único ocupan la 2ª columna entera. -->
+    <div class="columna-resultados">
+      <div class="barra-resultados" id="barra-resultados" style="display:none;">
+        <button type="button" class="vaciar" id="btn-vaciar">✕ Vaciar resultados</button>
+      </div>
+      <section id="resultados">
+        <div class="vacio">Rellena la ficha de búsqueda y pulsa «Buscar convocatorias» para consultar los boletines.</div>
+      </section>
+    </div>
 
   </main>
   <footer class="site-footer">
@@ -176,13 +186,13 @@
       </div>
       
       <div class="footer-col autores">
-        <p><strong>Desarrollo e IA:</strong></p>
+        <p><strong>Desarrolladores:</strong></p>
         <p>Javier Martín, Luzmila Moreno y Rodrigo Gálvez &copy; 2026</p>
       </div>
       
       <div class="footer-col enlaces">
         <a href="#">Soporte técnico</a>
-        <a href="#">Manual de uso</a>
+        <a href="{{ url_for('static', filename='manual.html') }}" target="_blank" rel="noopener">Manual de uso</a>
         <a href="#">Privacidad</a>
       </div>
     </div>

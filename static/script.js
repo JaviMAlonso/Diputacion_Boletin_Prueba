@@ -103,7 +103,7 @@ function actualizarDiasSegunFecha() {
   hoy.setHours(0, 0, 0, 0);
   elegida.setHours(0, 0, 0, 0);
   const diferenciaDias = Math.round((hoy - elegida) / (1000 * 60 * 60 * 24));
-  inputDias.value = Math.min(300, Math.max(1, diferenciaDias + 1));
+  inputDias.value = Math.min(30, Math.max(1, diferenciaDias + 1));
 }
 
 selectFechaElegida.addEventListener('change', () => {
@@ -123,9 +123,11 @@ document.getElementById('form-busqueda').addEventListener('submit', async (ev) =
 
   const boton = document.getElementById('btn-buscar');
   const resultados = document.getElementById('resultados');
+  const barraResultados = document.getElementById('barra-resultados');
   boton.disabled = true;
   boton.textContent = 'Consultando boletines…';
   resultados.innerHTML = '<div class="cargando">Consultando BOE, DOCM y BOP…</div>';
+  barraResultados.style.display = 'flex';
 
   const payload = {
     provincia: document.getElementById('provincia').value,
@@ -159,6 +161,14 @@ document.getElementById('form-busqueda').addEventListener('submit', async (ev) =
     boton.disabled = false;
     boton.textContent = 'Buscar convocatorias';
   }
+});
+
+// Botón para vaciar la zona de resultados sin tener que recargar la
+// página ni repetir una búsqueda solo para "limpiar" lo que se ve.
+document.getElementById('btn-vaciar').addEventListener('click', () => {
+  const resultados = document.getElementById('resultados');
+  resultados.innerHTML = '<div class="vacio">Rellena la ficha de búsqueda y pulsa «Buscar convocatorias» para consultar los boletines.</div>';
+  document.getElementById('barra-resultados').style.display = 'none';
 });
 
 function renderResultados(data) {

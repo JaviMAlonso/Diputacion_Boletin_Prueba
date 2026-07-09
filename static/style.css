@@ -278,6 +278,32 @@
   }
 
   /* ---------- Results ---------- */
+  .columna-resultados {
+    min-width: 0;
+  }
+
+  .barra-resultados {
+    display: none;
+    justify-content: flex-end;
+    margin-bottom: 10px;
+  }
+
+  button.vaciar {
+    background: none;
+    border: 1px solid var(--rule);
+    color: var(--ink-soft);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    padding: 6px 12px;
+    cursor: pointer;
+    transition: color .15s ease, border-color .15s ease;
+  }
+
+  button.vaciar:hover {
+    color: var(--seal);
+    border-color: var(--seal);
+  }
+
   .estado-fuentes {
     display: flex;
     flex-wrap: wrap;

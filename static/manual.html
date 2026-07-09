@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Manual de uso — Boletín Municipal de Convocatorias</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://www.diputoledo.es/favicon.ico" rel="icon">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* Estilos propios de esta página de manual, reutilizando las
+       variables de color/tipografía ya definidas en style.css para que
+       se vea como parte del mismo periódico, no como una página aparte. */
+
+    main.manual {
+      max-width: 760px;
+      display: block;
+    }
+
+    .volver {
+      display: inline-block;
+      margin-bottom: 18px;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 12px;
+      color: var(--bronze);
+      text-decoration: none;
+      letter-spacing: 0.4px;
+    }
+
+    .volver:hover {
+      color: var(--seal-dark);
+      text-decoration: underline;
+    }
+
+    article.manual-cuerpo {
+      background: var(--paper-raised);
+      border: 1px solid var(--rule);
+      padding: 32px 40px 40px;
+    }
+
+    article.manual-cuerpo .lead {
+      font-family: 'Source Serif 4', serif;
+      font-size: 17px;
+      color: var(--ink-soft);
+      border-left: 3px solid var(--seal);
+      padding-left: 16px;
+      margin: 0 0 30px;
+    }
+
+    article.manual-cuerpo h2 {
+      font-family: 'Source Serif 4', serif;
+      font-size: 15px;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: var(--seal);
+      border-bottom: 1px solid var(--ink);
+      padding-bottom: 8px;
+      margin: 34px 0 16px;
+    }
+
+    article.manual-cuerpo h2:first-of-type {
+      margin-top: 0;
+    }
+
+    article.manual-cuerpo p {
+      font-size: 14.5px;
+      line-height: 1.6;
+      margin: 0 0 14px;
+    }
+
+    article.manual-cuerpo ol,
+    article.manual-cuerpo ul {
+      padding-left: 22px;
+      margin: 0 0 18px;
+    }
+
+    article.manual-cuerpo li {
+      font-size: 14.5px;
+      line-height: 1.65;
+      margin-bottom: 10px;
+    }
+
+    article.manual-cuerpo li::marker {
+      color: var(--seal);
+      font-family: 'IBM Plex Mono', monospace;
+      font-weight: 500;
+    }
+
+    article.manual-cuerpo code {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 13px;
+      background: #EDEAE0;
+      padding: 1px 6px;
+      color: var(--seal-dark);
+    }
+
+    article.manual-cuerpo pre {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 13px;
+      background: var(--ink);
+      color: var(--paper);
+      padding: 14px 16px;
+      overflow-x: auto;
+      margin: 0 0 18px;
+      line-height: 1.6;
+    }
+
+    article.manual-cuerpo pre code {
+      background: none;
+      color: inherit;
+      padding: 0;
+    }
+
+    article.manual-cuerpo .estructura {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 13px;
+      background: #EDEAE0;
+      border: 1px solid var(--rule);
+      padding: 14px 16px;
+      margin: 0 0 18px;
+      line-height: 1.7;
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    article.manual-cuerpo .aviso {
+      background: var(--warn-bg);
+      border: 1px solid var(--warn-border);
+      border-left: 4px solid var(--warn-border);
+      padding: 12px 16px;
+      font-size: 13.5px;
+      color: #8A4A15;
+      margin: 0 0 18px;
+    }
+
+    article.manual-cuerpo a {
+      color: var(--seal);
+      text-decoration: none;
+      border-bottom: 1px solid var(--seal);
+    }
+
+    article.manual-cuerpo a:hover {
+      color: var(--seal-dark);
+      border-color: var(--seal-dark);
+    }
+
+    article.manual-cuerpo strong {
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    @media (max-width: 600px) {
+      article.manual-cuerpo {
+        padding: 24px 20px 30px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <header class="masthead">
+    <div class="masthead-row">
+      <div>
+        <h1>Manual de uso</h1>
+        <p class="subtitulo">Boletín Municipal de Convocatorias — cómo instalar, buscar y configurar los avisos.</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="manual">
+    <a class="volver" href="/">← Volver al buscador</a>
+
+    <article class="manual-cuerpo">
+      <p class="lead">Interfaz web local para monitorizar BOE, DOCM y BOP sin usar la terminal en cada
+        búsqueda. Usa exactamente la misma lógica que el script de línea de comandos
+        (<code>monitor_convocatorias.py</code>); esta carpeta solo añade un formulario web encima, más
+        avisos automáticos por Telegram cuando un plazo está a punto de vencer.</p>
+
+      <h2>Puesta en marcha</h2>
+      <p>La carpeta debería verse tal que así:</p>
+      <div class="estructura">monitor_web/
+        ├── app.py
+        ├── monitor_convocatorias.py
+        ├── config.env (opcional, para los avisos por Telegram)
+        ├── requirements.txt
+        ├── templates/
+        │ └── index.html
+        └── static/
+        ├── style.css
+        ├── script.js
+        └── manual.html</div>
+      <pre><code>cd monitor_web
+pip install -r requirements.txt
+python app.py</code></pre>
+      <p>Abre en el navegador: <strong>http://127.0.0.1:5000</strong></p>
+
+      <h2>Uso</h2>
+      <ol>
+        <li>Rellena la provincia (para el BOP) y cuántos días hacia atrás quieres revisar, o marca
+          «Ver solo un día concreto» para consultar una fecha fija.</li>
+        <li><em>(Opcional)</em> Marca «Ver solo oposiciones y empleo público» para filtrar solo procesos
+          selectivos, bolsas de trabajo y ofertas de empleo público. También puedes elegir un área de
+          interés distinta (cultura, deporte, infraestructuras...) en el desplegable, o dejarlo en «Sin
+          filtro» para ver todo.</li>
+        <li><em>(Opcional)</em> Activa «Generar resumen con IA» y pega tu clave gratuita de Gemini
+          (consíguela en <a href="https://aistudio.google.com/apikey" target="_blank"
+            rel="noopener">aistudio.google.com/apikey</a>).
+          La clave solo viaja a tu propio servidor local (127.0.0.1) y nunca se guarda en disco.</li>
+        <li><em>(Opcional)</em> Activa «Avisar por Telegram cuando un plazo esté a punto de vencer» — ver
+          más abajo cómo configurarlo la primera vez.</li>
+        <li>Pulsa «Buscar convocatorias».</li>
+        <li>Descarga el informe en Markdown con el botón de descarga si quieres archivarlo o
+          compartirlo.</li>
+      </ol>
+
+      <h2>Avisos por Telegram (opcional)</h2>
+      <p>Para recibir un aviso automático cuando una convocatoria entre en la ventana crítica de
+        vencimiento (por defecto, entre 3 y 5 días antes de que caduque el plazo):</p>
+      <ol>
+        <li>Abre Telegram, busca a <strong>@BotFather</strong> y escríbele <code>/newbot</code>. Sigue los
+          pasos (nombre y username del bot) y copia el token que te da — algo como
+          <code>123456789:ABCdefGhIJKlmNoPQRstuVWXyz</code>.
+        </li>
+        <li>En la carpeta <code>monitor_web</code>, crea un archivo de texto llamado
+          <strong>config.env</strong> (puedes copiar <code>config.env.ejemplo</code> y renombrarlo) con
+          esta línea:
+          <pre><code>TELEGRAM_BOT_TOKEN=tu_token_de_botfather</code></pre>
+          No hace falta usar la terminal ni <code>export</code>: basta con ese archivo.
+        </li>
+        <li>Arranca <code>python app.py</code>. En la web aparecerá un botón
+          <strong>«📩 Conectar mi Telegram»</strong>. Pulsa el botón y dale a <strong>Iniciar</strong> en
+          el chat que se abre — con eso quedas suscrito, sin tener que buscar tu <code>chat_id</code> a
+          mano.
+        </li>
+        <li>Marca la casilla de avisos en el formulario y ajusta si quieres la ventana de días («Avisar
+          desde / hasta»). Nunca se avisa el mismo día en que vence el plazo (0 días restantes), porque a
+          esas alturas ya no da tiempo útil de reacción.</li>
+      </ol>
+      <div class="aviso"><code>config.env</code> es solo tuyo: no lo compartas ni lo subas a ningún
+        repositorio público, ya que quien tenga el token puede controlar tu bot.</div>
+
+      <h2>Notas</h2>
+      <ul>
+        <li><strong>DOCM y BOP</strong> no tienen API pública estable; si sus portales bloquean peticiones
+          automatizadas (403), lo verás reflejado en el estado de fuentes («sin acceso») sin que la app se
+          detenga. El BOE sí tiene API oficial y debería funcionar siempre.</li>
+        <li>Cuando el título de un anuncio no trae plazo ni importe, la app descarga el documento completo
+          y vuelve a intentarlo sobre el texto íntegro (limitado a 25 documentos por búsqueda para no
+          saturar los servidores de origen ni ralentizar demasiado).</li>
+        <li>Esta app está pensada para uso <strong>local</strong>, en tu propio ordenador. No está
+          preparada para desplegarse en un servidor público sin añadir autenticación, ya que cualquiera que
+          acceda podría usar tu clave de IA o tu bot de Telegram.</li>
+      </ul>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-row">
+      <div class="footer-col info">
+        <h4>Boletín Municipal</h4>
+        <p>Sistema de vigilancia automatizada para uso institucional. Consultas en tiempo real sobre BOE, DOCM y BOP.
+        </p>
+      </div>
+      <div class="footer-col autores">
+        <p><strong>Desarrollo e IA:</strong></p>
+        <p>Javier Martín, Luzmila Moreno y Rodrigo Gálvez &copy; 2026</p>
+      </div>
+    </div>
+  </footer>
+
+</body>
+
+</html>
