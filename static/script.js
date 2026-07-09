@@ -9,12 +9,34 @@ checkboxIA.addEventListener('change', () => {
   camposIA.classList.toggle('visible', checkboxIA.checked);
 });
 
-// --- Notificación de plazo urgente por correo electrónico ---
+// --- Notificación de plazo urgente por Telegram ---
 const checkboxNotif = document.getElementById('notif_activar');
 const camposNotif = document.getElementById('notif-campos');
 checkboxNotif.addEventListener('change', () => {
   camposNotif.classList.toggle('visible', checkboxNotif.checked);
 });
+
+// Enlace para conectar el bot de Telegram sin que el usuario tenga que
+// buscar su chat_id a mano: solo pulsa el botón y le da a "Iniciar".
+(async () => {
+  const enlace = document.getElementById('enlace-telegram');
+  const nota = document.getElementById('nota-telegram-estado');
+  try {
+    const resp = await fetch('/api/telegram-info');
+    const data = await resp.json();
+    if (!data.configurado) {
+      nota.textContent = 'El bot de Telegram no está configurado en este servidor todavía.';
+    } else if (data.enlace) {
+      enlace.href = data.enlace;
+      enlace.style.display = 'inline-block';
+      nota.textContent = '¿Primera vez? Pulsa el botón de arriba y dale a "Iniciar" en el chat.';
+    } else {
+      nota.textContent = 'El bot de Telegram está configurado, pero no se pudo obtener su enlace ahora mismo.';
+    }
+  } catch (err) {
+    nota.textContent = 'No se pudo comprobar el estado del bot de Telegram.';
+  }
+})();
 
 const OPOSICIONES_KEYWORDS = 'oposición, oposiciones, proceso selectivo, pruebas selectivas, concurso-oposición, bolsa de trabajo, bolsa de empleo, oferta de empleo público, personal funcionario, personal laboral, tribunal calificador';
 
@@ -81,7 +103,7 @@ function actualizarDiasSegunFecha() {
   hoy.setHours(0, 0, 0, 0);
   elegida.setHours(0, 0, 0, 0);
   const diferenciaDias = Math.round((hoy - elegida) / (1000 * 60 * 60 * 24));
-  inputDias.value = Math.min(30, Math.max(1, diferenciaDias + 1));
+  inputDias.value = Math.min(300, Math.max(1, diferenciaDias + 1));
 }
 
 selectFechaElegida.addEventListener('change', () => {
@@ -119,7 +141,6 @@ document.getElementById('form-busqueda').addEventListener('submit', async (ev) =
       activar: checkboxNotif.checked,
       dias_min: document.getElementById('notif_dias_min').value,
       dias_max: document.getElementById('notif_dias_max').value,
-      email_destino: document.getElementById('notif_email_destino').value,
     },
   };
 
@@ -160,22 +181,6 @@ function renderResultados(data) {
   } else if (data.ia_estado && data.ia_estado.startsWith('error')) {
     partes.push('<span class="pastilla fail">IA: ' + escapeHtml(data.ia_estado) + '</span>');
   }
-
-  // Estado de la notificación de plazo urgente por correo
-  const notif = data.notificaciones;
-  if (notif) {
-    if (notif.error) {
-      partes.push('<span class="pastilla fail">Aviso por correo: ' + escapeHtml(notif.error) + '</span>');
-    } else if (notif.email === 'ok') {
-      partes.push('<span class="pastilla ok">✓ Aviso por correo enviado</span>');
-    } else if (notif.email === 'error') {
-      partes.push('<span class="pastilla fail">Aviso por correo: error al enviar</span>');
-    } else if (notif.urgentes_detectadas === 0) {
-      partes.push('<span class="pastilla ok">Sin plazos en la ventana crítica</span>');
-    } else if (notif.nuevas_a_notificar === 0) {
-      partes.push('<span class="pastilla ok">' + notif.urgentes_detectadas + ' urgente(s), ya notificada(s) antes</span>');
-    }
-  }
   partes.push('</div>');
 
   // Cabecera de resumen + descarga
@@ -205,16 +210,6 @@ function renderResultados(data) {
 
   const convocatorias = data.convocatorias || [];
   const alertaIds = new Set(data.alertas_ids || []);
-
-  // Alertas de plazo
-  const urgentes = convocatorias.filter(c => alertaIds.has(c.id_unico));
-  if (urgentes.length > 0) {
-    partes.push('<div class="alertas visible"><h3>⚠ Plazos próximos a vencer</h3><ul>');
-    for (const c of urgentes) {
-      partes.push('<li><b>' + (c.dias_restantes ?? '?') + ' días</b> — ' + escapeHtml(c.titulo) + '</li>');
-    }
-    partes.push('</ul></div>');
-  }
 
   if (convocatorias.length === 0) {
     partes.push('<div class="vacio">No se han encontrado convocatorias relevantes con estos criterios. Prueba a ampliar el rango de días o quitar las áreas de interés.</div>');

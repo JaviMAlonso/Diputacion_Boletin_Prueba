@@ -52,7 +52,7 @@
           </div>
           <div class="campo">
             <label for="dias">Días hacia atrás</label>
-            <input type="number" id="dias" value="7" min="1" max="30">
+            <input type="number" id="dias" value="7" min="1" max="300">
           </div>
         </div>
 
@@ -127,7 +127,7 @@
               </div>
               <div class="campo">
                 <label for="max_ia">Máx. resúmenes</label>
-                <input type="number" id="max_ia" value="10" min="1" max="30">
+                <input type="number" id="max_ia" value="10" min="1" max="300">
               </div>
             </div>
             <p class="ia-nota">Consigue una clave gratuita en aistudio.google.com/apikey. La clave viaja únicamente a tu
@@ -138,26 +138,25 @@
         <div class="toggle-ia">
           <label class="toggle-linea">
             <input type="checkbox" id="notif_activar">
-            <span>Avisarme por correo cuando un plazo esté a punto de vencer (3-5 días antes)</span>
+            <span>Avisar por Telegram cuando un plazo esté a punto de vencer</span>
           </label>
 
           <div class="ia-campos" id="notif-campos">
+            <div class="campo campo-telegram-conectar">
+              <a id="enlace-telegram" href="#" target="_blank" rel="noopener" class="boton-telegram" style="display:none;">📩 Conectar mi Telegram</a>
+              <p class="ia-nota" id="nota-telegram-estado">Comprobando el bot de Telegram…</p>
+            </div>
             <div class="fila-2">
               <div class="campo">
                 <label for="notif_dias_min">Avisar desde (días restantes)</label>
-                <input type="number" id="notif_dias_min" value="3" min="0" max="30">
+                <input type="number" id="notif_dias_min" value="3" min="1" max="300">
               </div>
               <div class="campo">
                 <label for="notif_dias_max">Avisar hasta (días restantes)</label>
-                <input type="number" id="notif_dias_max" value="5" min="0" max="30">
+                <input type="number" id="notif_dias_max" value="5" min="1" max="300">
               </div>
             </div>
-
-            <div class="campo">
-              <label for="notif_email_destino">Correo donde recibir el aviso</label>
-              <input type="text" id="notif_email_destino" placeholder="ayuntamiento@ejemplo.es">
-            </div>
-            <p class="ia-nota">Puedes indicar varios correos separados por comas.</p>
+            <p class="ia-nota">Pulsa "Conectar mi Telegram" y dale a Iniciar en el chat que se abre — solo hace falta una vez. Nunca se avisa el mismo día en que vence el plazo (0 días restantes).</p>
           </div>
         </div>
       </form>
