@@ -93,14 +93,53 @@ HEADERS = {"User-Agent": "MonitorConvocatoriasPublicas/1.0 (uso institucional)"}
 ESTADO_PATH = Path("convocatorias_vistas.json")
 
 # Configuración del bot de Telegram usado para avisar de plazos urgentes.
-# NUNCA se escribe el token aquí en el código: se lee de variables de
-# entorno. Para configurarlo (en Windows/macOS/Linux, según tu terminal):
-#   export TELEGRAM_BOT_TOKEN="tu_token_de_botfather"
-#   export TELEGRAM_CHAT_ID="tu_chat_id"
-# Si faltan, notificar_plazos_urgentes() simplemente no hace nada (lo avisa
-# por consola, no falla la búsqueda).
+# NUNCA se escribe el token aquí en el código. Hay dos formas de
+# configurarlo, a elegir la que resulte más cómoda:
+#
+#   OPCIÓN A (recomendada, sin usar la terminal): crea, en la misma carpeta
+#   que este archivo, un fichero de texto llamado "config.env" con una
+#   línea así (puedes copiar "config.env.ejemplo" y renombrarlo):
+#       TELEGRAM_BOT_TOKEN=tu_token_de_botfather
+#   Ese fichero se lee solo al arrancar; no hay que exportar nada.
+#
+#   OPCIÓN B (variable de entorno, para quien prefiera la terminal):
+#       export TELEGRAM_BOT_TOKEN="tu_token_de_botfather"      (Linux/macOS)
+#       $env:TELEGRAM_BOT_TOKEN = "tu_token_de_botfather"      (PowerShell)
+#   Si el valor ya está definido como variable de entorno, tiene prioridad
+#   sobre lo que haya en config.env.
+#
+# Si no se configura por ninguna de las dos vías, notificar_plazos_urgentes()
+# simplemente no hace nada (lo avisa por consola, no falla la búsqueda).
+
+def _cargar_config_env() -> None:
+    """Lee `config.env` (si existe) y copia sus claves a las variables de
+    entorno del proceso, sin sobrescribir las que ya estuvieran definidas
+    de antes (para que 'export'/PowerShell siga teniendo prioridad si
+    alguien lo usa). Formato: una línea por clave, `CLAVE=valor`; las
+    líneas vacías o que empiezan por # se ignoran. No requiere ninguna
+    librería adicional (no usa python-dotenv)."""
+    ruta = Path(__file__).resolve().parent / "config.env"
+    if not ruta.exists():
+        return
+    try:
+        for linea in ruta.read_text(encoding="utf-8").splitlines():
+            linea = linea.strip()
+            if not linea or linea.startswith("#") or "=" not in linea:
+                continue
+            clave, _, valor = linea.partition("=")
+            clave = clave.strip()
+            valor = valor.strip().strip('"').strip("'")
+            if clave and clave not in os.environ:
+                os.environ[clave] = valor
+    except OSError as e:
+        print(f"[AVISO] No se pudo leer config.env: {e}", file=sys.stderr)
+
+
+_cargar_config_env()
+
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
 
 # Palabras clave para clasificar cada anuncio detectado
 CATEGORIAS_KEYWORDS = {
