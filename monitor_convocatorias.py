@@ -55,13 +55,13 @@ import os
 import re
 import sys
 import tempfile
+import time
 import unicodedata
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from xml.etree import ElementTree as ET
-
 import requests
 
 try:
@@ -91,6 +91,16 @@ except ImportError:
 
 HEADERS = {"User-Agent": "MonitorConvocatoriasPublicas/1.0 (uso institucional)"}
 ESTADO_PATH = Path("convocatorias_vistas.json")
+
+# Configuración del bot de Telegram usado para avisar de plazos urgentes.
+# NUNCA se escribe el token aquí en el código: se lee de variables de
+# entorno. Para configurarlo (en Windows/macOS/Linux, según tu terminal):
+#   export TELEGRAM_BOT_TOKEN="tu_token_de_botfather"
+#   export TELEGRAM_CHAT_ID="tu_chat_id"
+# Si faltan, notificar_plazos_urgentes() simplemente no hace nada (lo avisa
+# por consola, no falla la búsqueda).
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # Palabras clave para clasificar cada anuncio detectado
 CATEGORIAS_KEYWORDS = {
@@ -272,14 +282,24 @@ def extraer_plazo(texto: str) -> tuple[Optional[str], Optional[int]]:
 
     # 4) Cualquier fecha "dd de mes de aaaa", descartando las que sean en
     #    realidad la fecha de emisión del documento (resolución/orden/etc.),
-    #    una fecha de apertura de ofertas (punto 2) o el principio/fin de
-    #    un periodo de ejecución (punto 3, ya cubierto arriba).
+    #    una fecha de apertura de ofertas (punto 2), el principio/fin de
+    #    un periodo de ejecución (punto 3, ya cubierto arriba), o la fecha
+    #    de FIRMA con la que casi todo documento oficial termina, con el
+    #    formato "Madrid, 7 de julio de 2026.—La Secretaria de Estado...".
+    #    Esa fecha de firma es casi siempre "hoy" (o muy cercana), así que
+    #    si no se excluye, el regex la confunde con un plazo que vence en
+    #    0 días y nunca deja que se detecte el plazo real (si lo hay) más
+    #    adelante en el texto.
     lead_rango = r"(?:comprendido\s+)?entre\s+el"
+    lead_firma = r"^[^.,]{0,40},\s*a?\s*$"  # "<Ciudad>, [a ]" justo antes de la fecha
     for m in re.finditer(patron_fecha, texto_low):
         contexto_previo = texto_low[max(0, m.start() - 45):m.start()]
+        contexto_posterior = texto_low[m.end():m.end() + 5]
         if (re.search(lead_emision + r"\s*$", contexto_previo)
                 or re.search(lead_apertura + r"[^0-9]{0,40}$", contexto_previo)
-                or re.search(lead_rango + r"\s*$", contexto_previo)):
+                or re.search(lead_rango + r"\s*$", contexto_previo)
+                or re.search(r"^\.\s*[—–-]", contexto_posterior)
+                or re.search(lead_firma, contexto_previo)):
             continue
         dia, mes_nombre, anio = m.groups()
         try:
@@ -853,7 +873,7 @@ def generar_alertas_plazo(convocatorias: list[Convocatoria], dias_aviso: int) ->
 
 
 # =====================================================================
-# 8 BIS. NOTIFICACIÓN DE PLAZO URGENTE POR CORREO ELECTRÓNICO
+# 8 BIS. NOTIFICACIÓN DE PLAZO URGENTE POR TELEGRAM
 # =====================================================================
 #
 # Este bloque envía un aviso proactivo cuando una convocatoria entra en la
@@ -865,12 +885,19 @@ def generar_alertas_plazo(convocatorias: list[Convocatoria], dias_aviso: int) ->
 # lanza a diario con cron), se guarda un registro propio de convocatorias
 # ya notificadas en NOTIFICADAS_PATH.
 #
-# El correo remitente, su contraseña de aplicación y el servidor SMTP se
-# configuran una sola vez en el servidor (app.py / variables de entorno),
-# no en el formulario: quien usa la web solo indica a qué correo quiere
-# que llegue el aviso.
+# El token del bot y el chat de destino se configuran UNA SOLA VEZ en el
+# servidor mediante las variables de entorno TELEGRAM_BOT_TOKEN y
+# TELEGRAM_CHAT_ID (ver más arriba en el archivo). No hay ningún dato de
+# contacto que rellenar desde la web: quien usa el formulario solo puede
+# activar/desactivar el aviso y ajustar la ventana de días.
 
 NOTIFICADAS_PATH = Path("convocatorias_notificadas.json")
+
+# Chats de Telegram suscritos a los avisos (quien ha escrito /start al bot).
+# Así un usuario normal no necesita buscar su chat_id a mano: solo tiene
+# que abrir un enlace al bot y pulsar "Iniciar". Ver
+# escuchar_telegram_en_segundo_plano() más abajo.
+SUSCRIPTORES_TELEGRAM_PATH = Path("telegram_suscriptores.json")
 
 
 def cargar_notificadas() -> set[str]:
@@ -889,67 +916,168 @@ def guardar_notificadas(ids: set[str]) -> None:
     )
 
 
+def cargar_suscriptores_telegram() -> set[str]:
+    """Carga el conjunto de chat_id que se han suscrito escribiendo /start."""
+    if SUSCRIPTORES_TELEGRAM_PATH.exists():
+        try:
+            return set(json.loads(SUSCRIPTORES_TELEGRAM_PATH.read_text(encoding="utf-8")))
+        except json.JSONDecodeError:
+            return set()
+    return set()
+
+
+def guardar_suscriptores_telegram(ids: set[str]) -> None:
+    SUSCRIPTORES_TELEGRAM_PATH.write_text(
+        json.dumps(sorted(ids), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
 def generar_alertas_urgentes(
     convocatorias: list[Convocatoria], dias_min: int = 3, dias_max: int = 5
 ) -> list[Convocatoria]:
     """
     Devuelve las convocatorias cuyo plazo vence dentro de la ventana crítica
     [dias_min, dias_max] (ambos incluidos). Por defecto, entre 3 y 5 días.
+
+    Por decisión de producto, NUNCA se incluyen convocatorias con
+    dias_restantes == 0 (el plazo vence hoy mismo): a esas alturas un
+    aviso ya no da tiempo útil de reacción, así que se excluyen aunque
+    alguien configure dias_min a 0 desde el formulario.
     """
     return [
         c for c in convocatorias
-        if c.dias_restantes is not None and dias_min <= c.dias_restantes <= dias_max
+        if c.dias_restantes is not None
+        and c.dias_restantes > 0
+        and dias_min <= c.dias_restantes <= dias_max
     ]
 
 
-def construir_mensaje_alerta(convocatorias: list[Convocatoria], municipio: str) -> str:
-    """Construye un mensaje de texto plano para el correo de alerta, con el
-    listado de convocatorias en la ventana crítica de vencimiento."""
-    lineas = [f"⚠️ Alerta de plazos próximos a vencer — {municipio}", ""]
-    for c in sorted(convocatorias, key=lambda x: x.dias_restantes):
-        lineas.append(f"• {c.titulo}")
-        lineas.append(f"  Quedan {c.dias_restantes} día(s) · Fuente: {c.fuente}")
-        if c.organismo:
-            lineas.append(f"  Organismo: {c.organismo}")
-        lineas.append(f"  Enlace: {c.url}")
-        lineas.append("")
-    return "\n".join(lineas).strip()
-
-
-def enviar_email(
-    destinatarios: list[str],
-    asunto: str,
-    cuerpo: str,
-    remitente: str,
-    password: str,
-    smtp_server: str = "smtp.gmail.com",
-    smtp_port: int = 587,
-) -> bool:
-    """
-    Envía un correo mediante SMTP con STARTTLS. Con Gmail, `password` debe
-    ser una "contraseña de aplicación" (no la contraseña normal de la
-    cuenta): https://myaccount.google.com/apppasswords
-    """
-    import smtplib
-    from email.mime.text import MIMEText
-
-    if not destinatarios or not remitente or not password:
-        return False
-
-    mensaje = MIMEText(cuerpo, "plain", "utf-8")
-    mensaje["Subject"] = asunto
-    mensaje["From"] = remitente
-    mensaje["To"] = ", ".join(destinatarios)
-
+def obtener_username_bot() -> Optional[str]:
+    """Consulta a la API de Telegram el nombre de usuario del bot (para
+    poder construir el enlace https://t.me/<username> que abre el chat).
+    Devuelve None si no hay token configurado o la consulta falla."""
+    if not TELEGRAM_TOKEN:
+        return None
     try:
-        with smtplib.SMTP(smtp_server, smtp_port, timeout=15) as servidor:
-            servidor.starttls()
-            servidor.login(remitente, password)
-            servidor.sendmail(remitente, destinatarios, mensaje.as_string())
-        return True
-    except Exception as e:
-        print(f"[AVISO] No se pudo enviar el correo de alerta: {e}", file=sys.stderr)
+        resp = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe", timeout=10
+        )
+        datos = resp.json()
+        if datos.get("ok"):
+            return datos["result"].get("username")
+    except requests.RequestException:
+        pass
+    return None
+
+
+def _enviar_mensaje_telegram_a(chat_id: str, texto_mensaje: str) -> bool:
+    """Envía un mensaje a un chat_id concreto (uso interno)."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": texto_mensaje, "parse_mode": "HTML"}
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        return response.status_code == 200
+    except requests.RequestException as e:
+        print(f"[AVISO] No se pudo conectar con Telegram: {e}", file=sys.stderr)
         return False
+
+
+def enviar_telegram(texto_mensaje: str) -> bool:
+    """Envía un mensaje formateado en HTML a TODOS los chats suscritos
+    (quienes han escrito /start al bot), más el chat fijo de
+    TELEGRAM_CHAT_ID si está definido (para no romper instalaciones que
+    aún lo configuren así manualmente)."""
+    if not TELEGRAM_TOKEN:
+        print(
+            "[AVISO] Notificación por Telegram no configurada: define la "
+            "variable de entorno TELEGRAM_BOT_TOKEN.",
+            file=sys.stderr,
+        )
+        return False
+
+    destinos = set(cargar_suscriptores_telegram())
+    if TELEGRAM_CHAT_ID:
+        destinos.add(str(TELEGRAM_CHAT_ID))
+
+    if not destinos:
+        print(
+            "[AVISO] Nadie se ha suscrito al bot de Telegram todavía "
+            "(nadie ha escrito /start).",
+            file=sys.stderr,
+        )
+        return False
+
+    exito_alguno = False
+    for chat_id in destinos:
+        if _enviar_mensaje_telegram_a(chat_id, texto_mensaje):
+            exito_alguno = True
+        else:
+            print(f"[AVISO] Error enviando a Telegram (chat {chat_id}).")
+
+    if exito_alguno:
+        print(f"Notificación enviada a Telegram con éxito ({len(destinos)} destinatario(s)).")
+    return exito_alguno
+
+
+def escuchar_telegram_en_segundo_plano() -> None:
+    """Bucle infinito (para ejecutar en un hilo aparte) que escucha los
+    mensajes que le escriban al bot y da de alta/baja automáticamente a
+    quien mande /start o /stop. Así el usuario medio no tiene que buscar
+    su chat_id a mano: solo abre un enlace al bot y pulsa "Iniciar".
+
+    Usa "long polling" (getUpdates), que no necesita servidor público ni
+    configuración de webhook: sirve igual para un Flask corriendo en
+    127.0.0.1.
+    """
+    if not TELEGRAM_TOKEN:
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    offset = None
+
+    while True:
+        try:
+            params = {"timeout": 25}
+            if offset is not None:
+                params["offset"] = offset
+            resp = requests.get(url, params=params, timeout=30)
+            datos = resp.json()
+
+            for actualizacion in datos.get("result", []):
+                offset = actualizacion["update_id"] + 1
+                mensaje = actualizacion.get("message") or {}
+                texto = (mensaje.get("text") or "").strip().lower()
+                chat_id = str((mensaje.get("chat") or {}).get("id", ""))
+                if not chat_id:
+                    continue
+
+                if texto.startswith("/start"):
+                    suscriptores = cargar_suscriptores_telegram()
+                    if chat_id not in suscriptores:
+                        suscriptores.add(chat_id)
+                        guardar_suscriptores_telegram(suscriptores)
+                    _enviar_mensaje_telegram_a(
+                        chat_id,
+                        "✅ ¡Listo! A partir de ahora recibirás aquí los avisos de "
+                        "plazos próximos a vencer del Boletín Municipal de "
+                        "Convocatorias.\n\nEscribe /stop si quieres dejar de recibirlos.",
+                    )
+                elif texto.startswith("/stop"):
+                    suscriptores = cargar_suscriptores_telegram()
+                    if chat_id in suscriptores:
+                        suscriptores.discard(chat_id)
+                        guardar_suscriptores_telegram(suscriptores)
+                    _enviar_mensaje_telegram_a(
+                        chat_id,
+                        "🔕 Avisos desactivados. Escribe /start cuando quieras "
+                        "volver a activarlos.",
+                    )
+        except requests.RequestException as e:
+            print(f"[AVISO] Error escuchando Telegram, reintentando en 5s: {e}", file=sys.stderr)
+            time.sleep(5)
+        except Exception as e:
+            print(f"[AVISO] Error inesperado escuchando Telegram: {e}", file=sys.stderr)
+            time.sleep(5)
 
 
 def notificar_plazos_urgentes(
@@ -957,20 +1085,16 @@ def notificar_plazos_urgentes(
     municipio: str,
     dias_min: int = 3,
     dias_max: int = 5,
-    email_cfg: Optional[dict] = None,
     ignorar_ya_notificadas: bool = True,
 ) -> dict:
     """
-    Punto de entrada único: detecta las convocatorias en la ventana crítica
-    de vencimiento (dias_min a dias_max) y envía un correo de aviso. Evita
-    reenviar el mismo aviso en ejecuciones posteriores (salvo que
-    `ignorar_ya_notificadas=False`).
+    Detecta las convocatorias en la ventana crítica de vencimiento y envía
+    la alerta a Telegram (en bloques, para evitar el límite de longitud de
+    un mensaje). El destino es siempre el chat configurado en el servidor
+    (TELEGRAM_TOKEN / TELEGRAM_CHAT_ID); no se puede elegir desde la web.
 
-    email_cfg: {"destinatarios": [...], "remitente": "...", "password": "...",
-                "smtp_server": "...", "smtp_port": 587}
-
-    Devuelve un resumen del resultado, útil para mostrar en la interfaz web
-    o en el log de la CLI.
+    Por diseño, nunca notifica convocatorias cuyo plazo vence HOY MISMO
+    (dias_restantes == 0): ver generar_alertas_urgentes().
     """
     urgentes = generar_alertas_urgentes(convocatorias, dias_min, dias_max)
 
@@ -983,33 +1107,50 @@ def notificar_plazos_urgentes(
     resultado = {
         "urgentes_detectadas": len(urgentes),
         "nuevas_a_notificar": len(a_notificar),
-        "email": None,
+        "telegram": None,
     }
 
     if not a_notificar:
         return resultado
 
-    mensaje = construir_mensaje_alerta(a_notificar, municipio)
-    asunto = f"⚠️ {len(a_notificar)} convocatoria(s) próximas a vencer — {municipio}"
+    # =========================================================================
+    # DIVISION DINÁMICA DE MENSAJES (Para evitar "message is too long")
+    # =========================================================================
+    encabezado = f"🔔 <b>¡{len(a_notificar)} Convocatoria(s) Urgente(s) en {municipio}!</b>\n\n"
+    mensaje_actual = encabezado
+    
+    enviado_ok = True  # Seguiremos el estado de todos los fragmentos enviados
 
-    if email_cfg:
-        ok = enviar_email(
-            destinatarios=email_cfg.get("destinatarios", []),
-            asunto=asunto,
-            cuerpo=mensaje,
-            remitente=email_cfg.get("remitente", ""),
-            password=email_cfg.get("password", ""),
-            smtp_server=email_cfg.get("smtp_server", "smtp.gmail.com"),
-            smtp_port=int(email_cfg.get("smtp_port", 587)),
-        )
-        resultado["email"] = "ok" if ok else "error"
+    for c in a_notificar:
+        # Construimos el bloque de texto de esta convocatoria individual
+        bloque_item = f"📌 <b>{c.titulo}</b>\n"
+        bloque_item += f"⏳ Días restantes: {c.dias_restantes if c.dias_restantes is not None else 'No definido'}\n"
+        bloque_item += f"🔗 <a href='{c.url}'>Ver convocatoria</a>\n\n"
+        
+        # Si al añadir este bloque superamos los 4000 caracteres, enviamos lo acumulado hasta ahora
+        if len(mensaje_actual) + len(bloque_item) > 4000:
+            ok = enviar_telegram(mensaje_actual)
+            if not ok:
+                enviado_ok = False
+            # Reiniciamos el mensaje para el siguiente bloque con aviso de continuación
+            mensaje_actual = encabezado + "<i>(Continuación del listado...)</i>\n\n" + bloque_item
+        else:
+            mensaje_actual += bloque_item
+            
+    # Al salir del bucle, enviamos el último fragmento restante que quedó a medias
+    if mensaje_actual != encabezado:
+        ok = enviar_telegram(mensaje_actual)
+        if not ok:
+            enviado_ok = False
 
-    if ignorar_ya_notificadas:
+    resultado["telegram"] = "ok" if enviado_ok else "error"
+    
+    # Solo marcamos como notificadas si el envío general fue exitoso
+    if ignorar_ya_notificadas and enviado_ok:
         ya_notificadas.update(c.id_unico for c in a_notificar)
         guardar_notificadas(ya_notificadas)
 
     return resultado
-
 
 # =====================================================================
 # 9. RESUMEN DE CONVOCATORIAS CON IA (Gemini, opcional)
@@ -1225,7 +1366,7 @@ def ejecutar(municipio: str, provincia: str, dias_atras: int,
              usar_ia: bool = False, gemini_key: Optional[str] = None,
              gemini_modelo: str = "gemini-2.5-flash-lite", max_ia: int = 15,
              notificar: bool = False, dias_min_urgente: int = 3,
-             dias_max_urgente: int = 5, email_cfg: Optional[dict] = None) -> None:
+             dias_max_urgente: int = 5) -> None:
 
     print(f"Monitorizando fuentes oficiales para: {municipio}")
     print(f"Provincia: {provincia} | Últimos {dias_atras} días | Alerta de plazo: {dias_aviso} días\n")
@@ -1274,19 +1415,19 @@ def ejecutar(municipio: str, provincia: str, dias_atras: int,
     else:
         print("\nNo hay convocatorias con plazo próximo a vencer.")
 
-    # Notificación por email para la ventana crítica de vencimiento
-    # (por defecto, entre 3 y 5 días)
-    if notificar and email_cfg:
+    # Notificación por Telegram para la ventana crítica de vencimiento
+    # (por defecto, entre 3 y 5 días). Requiere TELEGRAM_BOT_TOKEN y
+    # TELEGRAM_CHAT_ID configurados como variables de entorno.
+    if notificar:
         resultado_notif = notificar_plazos_urgentes(
             relevantes, municipio,
             dias_min=dias_min_urgente, dias_max=dias_max_urgente,
-            email_cfg=email_cfg,
         )
         print(
             f"\n📣 Notificaciones urgentes ({dias_min_urgente}-{dias_max_urgente} días): "
             f"{resultado_notif['urgentes_detectadas']} detectadas, "
             f"{resultado_notif['nuevas_a_notificar']} nuevas notificadas "
-            f"(email={resultado_notif['email']})"
+            f"(telegram={resultado_notif['telegram']})"
         )
 
 
@@ -1320,40 +1461,19 @@ def main():
                          help="Número máximo de convocatorias a resumir con IA por ejecución "
                               "(para no agotar la cuota gratuita).")
 
-    # --- Notificación de plazo urgente por email ---
+    # --- Notificación de plazo urgente por Telegram ---
     parser.add_argument("--notificar", action="store_true",
-                         help="Activa el envío de un aviso por correo para convocatorias en la "
-                              "ventana crítica de vencimiento (por defecto, entre 3 y 5 días).")
+                         help="Activa el envío de un aviso por Telegram para convocatorias en la "
+                              "ventana crítica de vencimiento (por defecto, entre 3 y 5 días). "
+                              "Requiere las variables de entorno TELEGRAM_BOT_TOKEN y "
+                              "TELEGRAM_CHAT_ID.")
     parser.add_argument("--dias-min-urgente", type=int, default=3,
-                         help="Días mínimos restantes para considerar el plazo urgente.")
+                         help="Días mínimos restantes para considerar el plazo urgente "
+                              "(nunca se notifica con 0 días restantes, aunque se ponga aquí).")
     parser.add_argument("--dias-max-urgente", type=int, default=5,
                          help="Días máximos restantes para considerar el plazo urgente.")
 
-    parser.add_argument("--email-destino", nargs="*", default=[],
-                         help="Uno o varios correos destinatarios del aviso.")
-    parser.add_argument("--email-remitente", default=os.environ.get("ALERTA_EMAIL_REMITENTE"),
-                         help="Cuenta de correo remitente (o var. de entorno ALERTA_EMAIL_REMITENTE).")
-    parser.add_argument("--email-password", default=os.environ.get("ALERTA_EMAIL_PASSWORD"),
-                         help="Contraseña de aplicación del remitente (o var. de entorno "
-                              "ALERTA_EMAIL_PASSWORD). Con Gmail, usar una contraseña de "
-                              "aplicación: https://myaccount.google.com/apppasswords")
-    parser.add_argument("--smtp-server", default=os.environ.get("ALERTA_SMTP_SERVER", "smtp.gmail.com"),
-                         help="Servidor SMTP del remitente (por defecto, Gmail).")
-    parser.add_argument("--smtp-port", type=int,
-                         default=int(os.environ.get("ALERTA_SMTP_PORT", 587)),
-                         help="Puerto SMTP (587 = STARTTLS, habitual).")
-
     args = parser.parse_args()
-
-    email_cfg = None
-    if args.email_destino and args.email_remitente and args.email_password:
-        email_cfg = {
-            "destinatarios": args.email_destino,
-            "remitente": args.email_remitente,
-            "password": args.email_password,
-            "smtp_server": args.smtp_server,
-            "smtp_port": args.smtp_port,
-        }
 
     ejecutar(
         municipio=args.municipio,
@@ -1369,7 +1489,6 @@ def main():
         notificar=args.notificar,
         dias_min_urgente=args.dias_min_urgente,
         dias_max_urgente=args.dias_max_urgente,
-        email_cfg=email_cfg,
     )
 
 
