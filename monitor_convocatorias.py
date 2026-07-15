@@ -865,6 +865,73 @@ def fetch_bop_toledo_resumen_dia(fecha: "date | None" = None) -> list[dict]:
 
     return resultados
 
+
+# =====================================================================
+# 6ter. DIPUTACIÓN DE TOLEDO — Destacados del Servicio de Empleo Público
+#    https://www.diputoledo.es/global/50/304/6699/destacados-rrhh
+#
+#    Esta página NO es un boletín oficial: es un listado de avisos
+#    ("Destacados") sobre oposiciones, bolsas de trabajo, relaciones de
+#    aprobados, plazos de solicitud, etc., publicado directamente por la
+#    Diputación. Cada aviso es un enlace con un texto del tipo
+#    "Nuevo 14/07/2026 SERVICIO DE EMPLEO PÚBLICO ...", así que basta con
+#    detectar ese patrón de fecha al principio del texto del enlace — no
+#    hace falta depender de una clase CSS concreta que pueda cambiar.
+#    Se muestra como listado en bruto (sin categorizar ni filtrar por
+#    área), igual que el resumen diario del BOP, solo cuando el usuario
+#    activa "Ver solo oposiciones y empleo público".
+# =====================================================================
+
+def fetch_diputoledo_empleo_destacados() -> list[dict]:
+    """Devuelve una lista de dicts {titulo, fecha, url} con los avisos
+    destacados del Servicio de Empleo Público de la Diputación de Toledo
+    (oposiciones, bolsas de trabajo, listas de aprobados...)."""
+    if BeautifulSoup is None:
+        print("[AVISO] BeautifulSoup no instalado: se omite Diputación de "
+              "Toledo (Empleo).", file=sys.stderr)
+        return []
+
+    url = "https://www.diputoledo.es/global/50/304/6699/destacados-rrhh"
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        print(f"[AVISO] No se pudo acceder a Empleo Público de la "
+              f"Diputación de Toledo: {e}", file=sys.stderr)
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    resultados: list[dict] = []
+    vistos: set[str] = set()
+
+    # "Nuevo 14/07/2026 texto..." o simplemente "14/07/2026 texto..."
+    patron_aviso = re.compile(r"^(?:nuevo\s+)?(\d{2}/\d{2}/\d{4})\s+(.+)$", re.IGNORECASE)
+
+    for enlace in soup.find_all("a", href=True):
+        texto = enlace.get_text(" ", strip=True)
+        m = patron_aviso.match(texto)
+        if not m:
+            continue
+        fecha_str, titulo = m.groups()
+        titulo = titulo.strip()
+        if len(titulo) < 10:
+            continue
+
+        href = enlace["href"].strip()
+        url_completa = href if href.startswith("http") else f"https://www.diputoledo.es{href}"
+        if url_completa in vistos:
+            continue
+        vistos.add(url_completa)
+
+        resultados.append({
+            "titulo": titulo,
+            "fecha": fecha_str,
+            "url": url_completa,
+        })
+
+    return resultados
+
+
 def cargar_vistas() -> set[str]:
     if ESTADO_PATH.exists():
         try:

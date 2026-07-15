@@ -134,6 +134,7 @@ document.getElementById('form-busqueda').addEventListener('submit', async (ev) =
     dias: document.getElementById('dias').value,
     areas: checkboxOposiciones.checked ? OPOSICIONES_KEYWORDS : document.getElementById('areas').value,
     solo_hoy: checkboxHoy.checked,
+    solo_oposiciones: checkboxOposiciones.checked,
     fecha_elegida: selectFechaElegida.value,
     usar_ia: checkboxIA.checked,
     gemini_key: document.getElementById('gemini_key').value,
@@ -212,6 +213,26 @@ function renderResultados(data) {
         partes.push('<div class="fuente-linea">' + escapeHtml(item.organismo || 'Entidad no identificada') + '</div>');
         partes.push('<h4>' + escapeHtml(item.resumen || item.titulo) + '</h4>');
         partes.push('<a class="enlace" href="' + escapeHtml(item.url_pdf) + '" target="_blank" rel="noopener">↓ Descargar PDF →</a>');
+        partes.push('</div>');
+      }
+    }
+    partes.push('</div>');
+  }
+
+  // Listado de "Destacados" de Empleo Público de la Diputación de
+  // Toledo (oposiciones, bolsas, listas de aprobados...), cuando el
+  // checkbox "Ver solo oposiciones y empleo público" está activo.
+  if (Array.isArray(data.destacados_empleo)) {
+    partes.push('<div class="seccion-categoria bop-hoy">');
+    partes.push('<div class="titulo-seccion"><span class="numeral">§</span><h3>Diputación de Toledo — Empleo público</h3><span class="cuenta">(' + data.destacados_empleo.length + ')</span></div>');
+    if (data.destacados_empleo.length === 0) {
+      partes.push('<div class="vacio">No se ha podido consultar la página de Destacados de Empleo Público de la Diputación de Toledo ahora mismo.</div>');
+    } else {
+      for (const item of data.destacados_empleo) {
+        partes.push('<div class="entrada entrada-bop-hoy">');
+        partes.push('<div class="fuente-linea">' + escapeHtml(item.fecha || '') + '</div>');
+        partes.push('<h4>' + escapeHtml(item.titulo) + '</h4>');
+        partes.push('<a class="enlace" href="' + escapeHtml(item.url) + '" target="_blank" rel="noopener">Ver aviso oficial →</a>');
         partes.push('</div>');
       }
     }
