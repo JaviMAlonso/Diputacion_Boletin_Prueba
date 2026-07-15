@@ -78,6 +78,7 @@ def api_buscar():
     areas = [a.strip() for a in (datos.get("areas") or "").split(",") if a.strip()]
     plazo_alerta = max(1, int(datos.get("plazo_alerta") or 10))
     solo_hoy = bool(datos.get("solo_hoy"))
+    solo_oposiciones = bool(datos.get("solo_oposiciones"))
 
     fecha_elegida_str = (datos.get("fecha_elegida") or "").strip()
     try:
@@ -144,6 +145,20 @@ def api_buscar():
             else:
                 fuentes_estado[clave_fuente] = {"ok": True, "detectadas": len(bop_hoy)}
 
+    destacados_empleo = None
+    destacados_empleo_error = None
+    if solo_oposiciones:
+        try:
+            destacados_empleo = mc.fetch_diputoledo_empleo_destacados()
+            fuentes_estado["Diputación de Toledo (Empleo)"] = {
+                "ok": True, "detectadas": len(destacados_empleo),
+            }
+        except Exception as e:
+            destacados_empleo = []
+            destacados_empleo_error = str(e)
+            fuentes_estado["Diputación de Toledo (Empleo)"] = {"ok": False, "error": str(e)}
+            print(f"[AVISO] No se pudo obtener Empleo Público de la Diputación de Toledo: {e}")
+
     ia_estado = None
     if usar_ia:
         if mc._configurar_gemini(gemini_key):
@@ -191,6 +206,7 @@ def api_buscar():
         "alertas_ids": list(alertas_ids),
         "bop_hoy": bop_hoy,
         "fecha_bop": fecha_elegida_str if solo_hoy else None,
+        "destacados_empleo": destacados_empleo,
     })
 
 

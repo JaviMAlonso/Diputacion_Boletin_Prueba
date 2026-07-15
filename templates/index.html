@@ -9,9 +9,10 @@
   <link href="https://www.diputoledo.es/favicon.ico" rel="icon">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link
-    href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Lexend:wght@400;500;600&display=swap"
     rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='accesibilidad.css') }}">
 
 </head>
 
@@ -186,7 +187,7 @@
       </div>
       
       <div class="footer-col autores">
-        <p><strong>Desarrolladores:</strong></p>
+        <p><strong>Desarrollo e IA:</strong></p>
         <p>Javier Martín, Luzmila Moreno y Rodrigo Gálvez &copy; 2026</p>
       </div>
       
@@ -197,8 +198,93 @@
       </div>
     </div>
   </footer>
-  
+
+  <!-- ---------- Menú de accesibilidad ---------- -->
+  <button type="button" id="a11y-toggle" class="a11y-boton-flotante" aria-label="Abrir menú de accesibilidad" title="Accesibilidad">♿</button>
+  <div class="a11y-fondo" id="a11y-fondo"></div>
+  <div class="a11y-panel" id="a11y-panel" aria-hidden="true">
+    <div class="a11y-cabecera">
+      <button type="button" id="a11y-cerrar" class="a11y-cerrar" aria-label="Cerrar menú de accesibilidad">✕</button>
+      <h2>Menú de accesibilidad</h2>
+    </div>
+    <div class="a11y-cuerpo">
+      <section class="a11y-seccion">
+        <h3>Ajustes de contenido</h3>
+        <div class="a11y-grid">
+          <button type="button" class="a11y-opcion" data-a11y="bold" title="Grosor de fuente">
+            <span class="a11y-icono">B</span><span class="a11y-etiqueta">Grosor de fuente</span>
+          </button>
+          <button type="button" class="a11y-opcion" data-a11y="line-height" title="Espaciado entre líneas">
+            <span class="a11y-icono">↕</span><span class="a11y-etiqueta">Espaciado entre líneas</span>
+          </button>
+          <button type="button" class="a11y-opcion" data-a11y="letter-spacing" title="Espaciado entre letras">
+            <span class="a11y-icono">↔</span><span class="a11y-etiqueta">Espaciado entre letras</span>
+          </button>
+          <button type="button" class="a11y-opcion" data-a11y="hide-images" title="Ocultar imágenes">
+            <span class="a11y-icono">🚫🖼</span><span class="a11y-etiqueta">Ocultar imágenes</span>
+          </button>
+          <button type="button" class="a11y-opcion" data-a11y="dislexia" title="Fuente para dislexia">
+            <span class="a11y-icono">Aa</span><span class="a11y-etiqueta">Fuente para dislexia</span>
+          </button>
+          <button type="button" class="a11y-opcion" data-a11y="resaltar-enlaces" title="Resaltar enlaces">
+            <span class="a11y-icono">🔗</span><span class="a11y-etiqueta">Resaltar enlaces</span>
+          </button>
+          <button type="button" class="a11y-opcion" data-a11y="resaltar-titulos" title="Resaltar títulos">
+            <span class="a11y-icono">▤</span><span class="a11y-etiqueta">Resaltar títulos</span>
+          </button>
+          <button type="button" class="a11y-opcion" data-a11y="fuente" title="Tamaño de fuente">
+            <span class="a11y-icono">Tt</span><span class="a11y-etiqueta">Tamaño fuente</span>
+            <span class="a11y-pasos" id="a11y-pasos-fuente"><i></i><i></i><i></i></span>
+          </button>
+        </div>
+      </section>
+
+      <section class="a11y-seccion">
+        <h3>Ajustes de color</h3>
+        <div class="a11y-grid">
+          <button type="button" class="a11y-opcion" data-a11y="contraste-oscuro" title="Contraste oscuro">
+            <span class="a11y-icono">🌙</span><span class="a11y-etiqueta">Contraste oscuro</span>
+          </button>
+          <button type="button" class="a11y-opcion" data-a11y="contraste-claro" title="Contraste claro">
+            <span class="a11y-icono">☀</span><span class="a11y-etiqueta">Contraste claro</span>
+          </button>
+          <button type="button" class="a11y-opcion" data-a11y="invertir" title="Invertir colores">
+            <span class="a11y-icono">◑</span><span class="a11y-etiqueta">Invertir colores</span>
+          </button>
+          <button type="button" class="a11y-opcion" data-a11y="baja-saturacion" title="Baja saturación">
+            <span class="a11y-icono">💧</span><span class="a11y-etiqueta">Baja saturación</span>
+          </button>
+          <button type="button" class="a11y-opcion" data-a11y="monocromo" title="Monocromo">
+            <span class="a11y-icono">◐</span><span class="a11y-etiqueta">Monocromo</span>
+          </button>
+          <button type="button" class="a11y-opcion" data-a11y="alta-saturacion" title="Alta saturación">
+            <span class="a11y-icono">🎨</span><span class="a11y-etiqueta">Alta saturación</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="a11y-seccion">
+        <h3>Herramientas</h3>
+        <div class="a11y-grid">
+          <button type="button" class="a11y-opcion" data-a11y="cursor-grande" title="Cursor grande">
+            <span class="a11y-icono">➤</span><span class="a11y-etiqueta">Cursor grande</span>
+          </button>
+          <button type="button" class="a11y-opcion" data-a11y="sin-animaciones" title="Detener animaciones">
+            <span class="a11y-icono">⏸</span><span class="a11y-etiqueta">Detener animaciones</span>
+          </button>
+          <button type="button" class="a11y-opcion" data-a11y="guia-lectura" title="Guía de lectura">
+            <span class="a11y-icono">🔦</span><span class="a11y-etiqueta">Guía de lectura</span>
+          </button>
+        </div>
+      </section>
+
+      <button type="button" id="a11y-restablecer" class="a11y-restablecer">↺ Restablecer todos los ajustes</button>
+    </div>
+  </div>
+  <div class="a11y-guia-linea" id="a11y-guia-linea"></div>
+
   <script src="{{ url_for('static', filename='script.js') }}"></script>
+  <script src="{{ url_for('static', filename='accesibilidad.js') }}"></script>
 
 </body>
 

@@ -1,0 +1,313 @@
+/* =====================================================================
+   MENÚ DE ACCESIBILIDAD — botón flotante + panel lateral
+   Reutiliza las variables de color/tipografía ya definidas en style.css
+   (--seal, --seal-dark, --rule, --paper, --warn-border...) para que se
+   vea como parte del mismo periódico, no como un widget aparte.
+   ===================================================================== */
+
+.a11y-boton-flotante {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: var(--seal);
+  color: #fff;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(18, 63, 41, 0.35);
+  z-index: 9998;
+  transition: background .15s ease, transform .15s ease;
+}
+
+.a11y-boton-flotante:hover {
+  background: var(--seal-dark);
+  transform: scale(1.05);
+}
+
+.a11y-fondo {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 20, 16, 0.4);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .18s ease;
+  z-index: 9997;
+}
+
+.a11y-fondo.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.a11y-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(360px, 100vw);
+  background: var(--paper);
+  box-shadow: -6px 0 24px rgba(0, 0, 0, 0.2);
+  transform: translateX(100%);
+  transition: transform .2s ease;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+}
+
+.a11y-panel.abierto {
+  transform: translateX(0);
+}
+
+.a11y-cabecera {
+  background: var(--seal-dark);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  flex: 0 0 auto;
+}
+
+.a11y-cabecera h2 {
+  font-family: 'Source Serif 4', serif;
+  font-size: 17px;
+  margin: 0;
+  letter-spacing: 0.2px;
+}
+
+.a11y-cerrar {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  color: #fff;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  font-size: 14px;
+  cursor: pointer;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.a11y-cerrar:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.a11y-cuerpo {
+  overflow-y: auto;
+  padding: 20px 18px 28px;
+  flex: 1 1 auto;
+}
+
+.a11y-seccion {
+  margin-bottom: 22px;
+}
+
+.a11y-seccion h3 {
+  font-family: 'Source Serif 4', serif;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--ink-soft);
+  margin: 0 0 12px;
+}
+
+.a11y-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.a11y-opcion {
+  position: relative;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 10px 4px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-family: 'Inter', sans-serif;
+  color: var(--ink);
+  text-align: center;
+  min-height: 74px;
+}
+
+.a11y-opcion:hover {
+  border-color: var(--bronze);
+}
+
+.a11y-opcion.activo {
+  border-color: var(--warn-border);
+  border-width: 2px;
+  color: #8A4A15;
+}
+
+.a11y-icono {
+  font-size: 18px;
+  line-height: 1;
+  font-weight: 600;
+}
+
+.a11y-etiqueta {
+  font-size: 10.5px;
+  line-height: 1.25;
+}
+
+.a11y-pasos {
+  position: absolute;
+  bottom: 4px;
+  display: flex;
+  gap: 2px;
+}
+
+.a11y-pasos i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--rule);
+  font-style: normal;
+}
+
+.a11y-pasos i.activo {
+  background: var(--warn-border);
+}
+
+.a11y-restablecer {
+  width: 100%;
+  padding: 10px;
+  background: none;
+  border: 1px solid var(--rule);
+  color: var(--ink-soft);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.a11y-restablecer:hover {
+  color: var(--seal);
+  border-color: var(--seal);
+}
+
+@media (max-width: 420px) {
+  .a11y-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* ---------------------------------------------------------------------
+   EFECTOS: cada ajuste añade una clase a <html> y el efecto se aplica
+   de forma global a toda la página.
+   --------------------------------------------------------------------- */
+
+/* Ajustes de contenido */
+html.a11y-bold body, html.a11y-bold body * {
+  font-weight: 700 !important;
+}
+
+html.a11y-line-height body, html.a11y-line-height body * {
+  line-height: 2 !important;
+}
+
+html.a11y-letter-spacing body, html.a11y-letter-spacing body * {
+  letter-spacing: 0.12em !important;
+}
+
+html.a11y-hide-images img {
+  visibility: hidden !important;
+}
+
+html.a11y-dislexia body, html.a11y-dislexia body * {
+  font-family: 'Lexend', 'Verdana', sans-serif !important;
+}
+
+html.a11y-resaltar-enlaces a {
+  background: #FFF176 !important;
+  color: #000 !important;
+  text-decoration: underline !important;
+}
+
+html.a11y-resaltar-titulos h1,
+html.a11y-resaltar-titulos h2,
+html.a11y-resaltar-titulos h3,
+html.a11y-resaltar-titulos h4 {
+  background: #FFF176 !important;
+  color: #000 !important;
+}
+
+/* "Tamaño Fuente": zoom no es un estándar CSS oficial, pero lo admiten
+   Chrome, Edge, Safari y Firefox recientes; es la forma más sencilla de
+   escalar toda la página sin reescribir cada tamaño en px a rem. */
+html.a11y-fuente-1 body {
+  zoom: 1.15;
+}
+
+html.a11y-fuente-2 body {
+  zoom: 1.32;
+}
+
+/* Ajustes de color (excluyentes entre sí, como un grupo de radio) */
+html.a11y-contraste-oscuro body {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+html.a11y-invertir body {
+  filter: invert(1);
+}
+
+html.a11y-baja-saturacion body {
+  filter: saturate(0.35);
+}
+
+html.a11y-monocromo body {
+  filter: grayscale(1);
+}
+
+html.a11y-alta-saturacion body {
+  filter: saturate(2.2);
+}
+
+/* "Contraste claro" no aplica ningún filtro: es el estado normal de la
+   página, así que sirve para quitar cualquiera de los de arriba. */
+
+/* Herramientas */
+html.a11y-cursor-grande,
+html.a11y-cursor-grande * {
+  cursor:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 24 24'%3E%3Cpath fill='%231B2620' stroke='white' stroke-width='1.5' d='M5 3l14 8-6 1.5-2 6.5z'/%3E%3C/svg%3E")
+    4 2, auto !important;
+}
+
+html.a11y-sin-animaciones *,
+html.a11y-sin-animaciones *::before,
+html.a11y-sin-animaciones *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
+.a11y-guia-linea {
+  display: none;
+  position: fixed;
+  left: 0;
+  right: 0;
+  height: 34px;
+  background: rgba(30, 94, 62, 0.16);
+  border-top: 2px solid var(--seal);
+  border-bottom: 2px solid var(--seal);
+  pointer-events: none;
+  transform: translateY(-50%);
+  z-index: 9996;
+}
+
+html.a11y-guia-lectura .a11y-guia-linea {
+  display: block;
+}
